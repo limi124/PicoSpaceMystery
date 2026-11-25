@@ -1,0 +1,107 @@
+{
+  "agentHosts": {
+    "claude-code": {
+      "platform": "spatial",
+      "pluginName": "pico-spatial-agentic-tools",
+      "pluginVersion": "0.7.0",
+      "pluginSource": {
+        "kind": "release",
+        "distribution": "public"
+      },
+      "sourcePath": "C:\\Users\\shuo\\.pico-cli\\cache\\PICO-Intelligent-Plugins",
+      "resources": {
+        "skills": [
+          "pico-spatial-app-designer",
+          "porting-android-app",
+          "spatial-accessibility",
+          "spatial-app-dev-workflow",
+          "spatial-app-onboarding",
+          "spatial-app-performance-analysis",
+          "spatial-app-performance-workflow",
+          "spatial-bundle-scene-reader",
+          "spatial-design-to-app",
+          "spatial-editor",
+          "spatial-sdk-guideline",
+          "spatial-sdk-scene-builder",
+          "spatial-sdk-update",
+          "spatial-ui-ability",
+          "spatial-ui-design-style",
+          "spatialml",
+          "spatialml-debugging",
+          "threejs-to-spatial"
+        ],
+        "mcpServers": []
+      }
+    },
+    "codex": {
+      "platform": "spatial",
+      "pluginName": "pico-spatial-agentic-tools",
+      "pluginVersion": "0.7.0",
+      "pluginSource": {
+        "kind": "release",
+        "distribution": "public"
+      },
+      "sourcePath": "C:\\Users\\shuo\\.pico-cli\\cache\\PICO-Intelligent-Plugins",
+      "resources": {
+        "skills": [
+          "pico-spatial-app-designer",
+          "porting-android-app",
+          "spatial-accessibility",
+          "spatial-app-dev-workflow",
+          "spatial-app-onboarding",
+          "spatial-app-performance-analysis",
+          "spatial-app-performance-workflow",
+          "spatial-bundle-scene-reader",
+          "spatial-design-to-app",
+          "spatial-editor",
+          "spatial-sdk-guideline",
+          "spatial-sdk-scene-builder",
+          "spatial-sdk-update",
+          "spatial-ui-ability",
+          "spatial-ui-design-style",
+          "spatialml",
+          "spatialml-debugging",
+          "threejs-to-spatial"
+        ],
+        "mcpServers": []
+      }
+    },
+    "copilot": {
+      "platform": "spatial",
+      "pluginName": "pico-spatial-agentic-tools",
+      "pluginVersion": "0.7.0",
+      "pluginSource": {
+        "kind": "release",
+        "distribution": "public"
+      },
+      "sourcePath": "C:\\Users\\shuo\\.pico-cli\\cache\\PICO-Intelligent-Plugins",
+      "resources": {
+        "skills": [
+          "pico-spatial-app-designer",
+          "porting-android-app",
+          "spatial-accessibility",
+          "spatial-app-dev-workflow",
+          "spatial-app-onboarding",
+          "spatial-app-performance-analysis",
+          "spatial-app-performance-workflow",
+          "spatial-bundle-scene-reader",
+          "spatial-design-to-app",
+          "spatial-editor",
+          "spatial-sdk-guideline",
+          "spatial-sdk-scene-builder",
+          "spatial-sdk-update",
+          "spatial-ui-ability",
+          "spatial-ui-design-style",
+          "spatialml",
+          "spatialml-debugging",
+          "threejs-to-spatial"
+        ],
+        "mcpServers": []
+      }
+    }
+  },
+  "operationToken": "37a7d3bd-aca2-4435-82b6-af7ec27abd0b",
+  "agentVaultWorkspace": "6.2/agent-vault/spatial",
+  "version": "6.2",
+  "platform": "spatial"
+}

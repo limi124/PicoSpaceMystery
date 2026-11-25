@@ -1,0 +1,958 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>PICO 实景密室生成器 · 3D MR 可视化原型</title>
+  <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+  <style>
+    :root {
+      --bg-glass: rgba(15, 22, 38, 0.72);
+      --border-glass: rgba(120, 210, 255, 0.28);
+      --accent: #4deeea;
+      --accent-2: #a78bfa;
+      --warn: #fbbf24;
+      --danger: #f87171;
+      --success: #34d399;
+      --text: #f1f5f9;
+      --muted: #94a3b8;
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      overflow: hidden;
+      background: radial-gradient(circle at 50% 35%, #111b33 0%, #060913 100%);
+      color: var(--text);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+      user-select: none;
+    }
+    #canvas-container { position: fixed; inset: 0; z-index: 1; cursor: grab; }
+    #canvas-container:active { cursor: grabbing; }
+
+    /* Spatial UI 磨砂玻璃通用样式 */
+    .glass {
+      background: var(--bg-glass);
+      backdrop-filter: blur(18px);
+      -webkit-backdrop-filter: blur(18px);
+      border: 1px solid var(--border-glass);
+      border-radius: 18px;
+      box-shadow: 0 12px 40px rgba(0, 0, 0, 0.45), inset 0 1px 0 rgba(255, 255, 255, 0.08);
+    }
+
+    /* 顶部 HUD */
+    #top-hud {
+      position: fixed;
+      top: 16px;
+      left: 16px;
+      right: 16px;
+      z-index: 10;
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+      pointer-events: none;
+    }
+    .hud-card {
+      pointer-events: auto;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      padding: 3px 10px;
+      border-radius: 999px;
+      background: rgba(77, 238, 234, 0.14);
+      color: var(--accent);
+      border: 1px solid rgba(77, 238, 234, 0.35);
+    }
+    .case-title { font-size: 18px; font-weight: 700; margin-top: 4px; }
+    .case-sub { font-size: 12px; color: var(--muted); margin-top: 2px; max-width: 440px; }
+
+    .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    button {
+      cursor: pointer;
+      border: 1px solid rgba(255, 255, 255, 0.14);
+      background: rgba(255, 255, 255, 0.07);
+      color: var(--text);
+      padding: 8px 14px;
+      border-radius: 12px;
+      font-size: 13px;
+      font-weight: 500;
+      transition: all 0.18s ease;
+    }
+    button:hover { background: rgba(77, 238, 234, 0.18); border-color: var(--accent); }
+    button.primary {
+      background: linear-gradient(135deg, rgba(77, 238, 234, 0.28), rgba(167, 139, 250, 0.28));
+      border-color: rgba(77, 238, 234, 0.5);
+    }
+
+    /* 左侧线索进度栏 */
+    #left-panel {
+      position: fixed;
+      left: 16px;
+      top: 118px;
+      width: 260px;
+      z-index: 10;
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+    .panel-title {
+      font-size: 12px;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--accent);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .entity-item {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 9px 11px;
+      border-radius: 12px;
+      background: rgba(255, 255, 255, 0.04);
+      border: 1px solid rgba(255, 255, 255, 0.06);
+      font-size: 13px;
+      cursor: pointer;
+      transition: 0.15s;
+    }
+    .entity-item:hover { background: rgba(77, 238, 234, 0.12); border-color: rgba(77, 238, 234, 0.35); }
+    .entity-item.found { border-color: rgba(52, 211, 153, 0.45); }
+    .tag {
+      font-size: 11px;
+      padding: 2px 7px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, 0.08);
+      color: var(--muted);
+    }
+    .tag.ok { background: rgba(52, 211, 153, 0.18); color: var(--success); }
+    .tag.lock { background: rgba(251, 191, 36, 0.18); color: var(--warn); }
+
+    /* 右侧交互面板（线索详情 / 密码解锁 / AI 嫌疑人盘问） */
+    #right-panel {
+      position: fixed;
+      right: 16px;
+      top: 118px;
+      width: 340px;
+      max-height: calc(100vh - 190px);
+      z-index: 10;
+      padding: 18px;
+      display: none;
+      flex-direction: column;
+      gap: 12px;
+      overflow-y: auto;
+    }
+    #right-panel.show { display: flex; }
+    .close-btn {
+      background: transparent;
+      border: none;
+      color: var(--muted);
+      font-size: 18px;
+      padding: 2px 6px;
+    }
+    .clue-body {
+      font-size: 14px;
+      line-height: 1.65;
+      color: #e2e8f0;
+      background: rgba(0, 0, 0, 0.25);
+      padding: 12px;
+      border-radius: 12px;
+      border: 1px solid rgba(255, 255, 255, 0.06);
+    }
+    input, textarea {
+      width: 100%;
+      background: rgba(0, 0, 0, 0.35);
+      border: 1px solid rgba(255, 255, 255, 0.16);
+      border-radius: 10px;
+      padding: 9px 12px;
+      color: var(--text);
+      font-size: 13px;
+      outline: none;
+    }
+    input:focus, textarea:focus { border-color: var(--accent); }
+
+    /* 聊天记录 */
+    #chat-box {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      max-height: 220px;
+      overflow-y: auto;
+      padding-right: 4px;
+    }
+    .msg {
+      padding: 8px 11px;
+      border-radius: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      max-width: 90%;
+    }
+    .msg.user { align-self: flex-end; background: rgba(77, 238, 234, 0.2); border: 1px solid rgba(77, 238, 234, 0.35); }
+    .msg.ai { align-self: flex-start; background: rgba(167, 139, 250, 0.16); border: 1px solid rgba(167, 139, 250, 0.3); }
+
+    /* 底部操作提示与音效指示 */
+    #bottom-bar {
+      position: fixed;
+      bottom: 16px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 10;
+      padding: 9px 18px;
+      font-size: 12px;
+      color: var(--muted);
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      white-space: nowrap;
+    }
+    #audio-toast {
+      position: fixed;
+      bottom: 64px;
+      left: 50%;
+      transform: translateX(-50%);
+      z-index: 20;
+      padding: 10px 18px;
+      font-size: 13px;
+      color: var(--warn);
+      border-color: rgba(251, 191, 36, 0.45);
+      display: none;
+    }
+    #audio-toast.show { display: block; animation: fadeIn 0.2s ease; }
+
+    /* API 配置弹窗 */
+    #modal-backdrop {
+      position: fixed;
+      inset: 0;
+      background: rgba(4, 7, 15, 0.65);
+      z-index: 30;
+      display: none;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-backdrop.show { display: flex; }
+    #api-modal { width: 420px; max-width: 92vw; padding: 20px; display: flex; flex-direction: column; gap: 12px; }
+    .field-label { font-size: 12px; color: var(--muted); margin-bottom: 4px; display: block; }
+
+    /* 3D 世界悬浮标签 */
+    #labels-layer { position: fixed; inset: 0; pointer-events: none; z-index: 5; }
+    .world-label {
+      position: absolute;
+      transform: translate(-50%, -100%);
+      padding: 4px 10px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 600;
+      background: rgba(10, 16, 30, 0.82);
+      border: 1px solid rgba(77, 238, 234, 0.45);
+      color: #fff;
+      white-space: nowrap;
+      box-shadow: 0 4px 14px rgba(0, 0, 0, 0.4);
+      pointer-events: auto;
+      cursor: pointer;
+    }
+    .world-label.suspect { border-color: rgba(167, 139, 250, 0.65); color: #ddd6fe; }
+    .world-label.locked { border-color: rgba(251, 191, 36, 0.65); color: #fde68a; }
+    .world-label.surface {
+      background: rgba(15, 23, 42, 0.45);
+      border-color: rgba(148, 163, 184, 0.25);
+      color: #94a3b8;
+      font-size: 10px;
+      font-weight: 400;
+      pointer-events: none;
+    }
+
+    @keyframes fadeIn { from { opacity: 0; transform: translate(-50%, 6px); } to { opacity: 1; transform: translate(-50%, 0); } }
+  </style>
+</head>
+<body>
+  <div id="canvas-container"></div>
+  <div id="labels-layer"></div>
+
+  <!-- 顶部 HUD -->
+  <div id="top-hud">
+    <div class="hud-card glass">
+      <div>
+        <span class="badge">PICO MR 实景密室 · 3D 空间预览</span>
+        <div class="case-title" id="case-title">雨夜来信</div>
+        <div class="case-sub" id="case-narration">雨声停下时，客厅的钟仍在走。桌上有一封写着你名字的信。</div>
+      </div>
+    </div>
+    <div class="hud-card glass">
+      <div class="btn-row">
+        <button onclick="triggerRoomScan()">📡 重新扫描房间</button>
+        <button class="primary" onclick="openApiModal()">✨ AI 生成新剧本</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 左侧线索与嫌疑人列表 -->
+  <div id="left-panel" class="glass">
+    <div class="panel-title">
+      <span>空间锚点线索</span>
+      <span id="clue-progress">0 / 4</span>
+    </div>
+    <div id="clue-list"></div>
+
+    <div class="panel-title" style="margin-top: 8px;">
+      <span>AI 嫌疑人</span>
+      <span style="color: var(--accent-2)">语音/文字盘问</span>
+    </div>
+    <div id="suspect-list"></div>
+  </div>
+
+  <!-- 右侧交互面板 -->
+  <div id="right-panel" class="glass">
+    <div style="display:flex; justify-content:space-between; align-items:center;">
+      <span class="badge" id="rp-type">线索详情</span>
+      <button class="close-btn" onclick="closeRightPanel()">✕</button>
+    </div>
+    <div style="font-size:17px; font-weight:700;" id="rp-title">标题</div>
+    <div style="font-size:12px; color:var(--muted);" id="rp-surface">锚定平面：table-1</div>
+    <div id="rp-content"></div>
+  </div>
+
+  <div id="audio-toast" class="glass">🔊 空间音效</div>
+
+  <div id="bottom-bar" class="glass">
+    <span>🖱️ 左键拖拽旋转视角</span>
+    <span>⌨️ W/A/S/D 在客厅走动</span>
+    <span>👆 点击 3D 发光线索 / 光球交互</span>
+  </div>
+
+  <!-- AI 配置弹窗 -->
+  <div id="modal-backdrop">
+    <div id="api-modal" class="glass">
+      <div style="display:flex; justify-content:space-between; align-items:center;">
+        <strong style="font-size:16px;">接入大模型生成新剧本（OpenAI 兼容）</strong>
+        <button class="close-btn" onclick="closeApiModal()">✕</button>
+      </div>
+      <p style="font-size:12px; color:var(--muted); line-height:1.5;">
+        系统会把当前客厅的 5 个平面坐标（floor-1, wall-1~3, table-1）发给大模型现场编排新案件。不填 Key 也可以直接重置内置剧本。
+      </p>
+      <div>
+        <label class="field-label">Base URL</label>
+        <input id="cfg-url" value="https://chat.ecnu.edu.cn/open/api/v1" />
+      </div>
+      <div>
+        <label class="field-label">API Key</label>
+        <input id="cfg-key" type="password" placeholder="sk-..." />
+      </div>
+      <div>
+        <label class="field-label">Model (ecnu-plus / ecnu-max)</label>
+        <input id="cfg-model" value="ecnu-plus" />
+      </div>
+      <div class="btn-row" style="justify-content:flex-end; margin-top:4px;">
+        <button onclick="resetFallbackCase()">使用内置《雨夜来信》</button>
+        <button class="primary" id="gen-btn" onclick="generateWithAI()">调用 AI 生成</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    // 1. 对齐 E:\PicoSpaceMystery\...\RoomScanner.kt 的客厅 Mock 数据
+    const MOCK_ROOM = {
+      surfaces: [
+        { id: "floor-1", type: "floor", center: { x: 0, y: 0, z: 0 }, extent: { width: 5, height: 4 } },
+        { id: "wall-1", type: "wall", center: { x: 0, y: 1.4, z: -2 }, extent: { width: 5, height: 2.8 } },
+        { id: "wall-2", type: "wall", center: { x: -2.5, y: 1.4, z: 0 }, extent: { width: 4, height: 2.8 } },
+        { id: "wall-3", type: "wall", center: { x: 2.5, y: 1.4, z: 0 }, extent: { width: 4, height: 2.8 } },
+        { id: "table-1", type: "table", center: { x: 0, y: 0.75, z: -0.5 }, extent: { width: 1.2, height: 0.7 } }
+      ]
+    };
+
+    // 2. 对齐 CaseGeneratorService.kt 的内置兜底剧本
+    const FALLBACK_CASE = {
+      case_title: "雨夜来信",
+      opening_narration: "雨声停下时，客厅的钟仍在走。桌上有一封写着你名字的信。",
+      clues: [
+        { clue_id: "c1", title: "湿脚印", surface_id: "floor-1", offset_from_center: { x: 0.5, y: 0.02, z: 0.3 }, visual_type: "footprint", content: "脚印从窗边走向桌子，却没有返回。", is_locked: false },
+        { clue_id: "c2", title: "墙上刻痕", surface_id: "wall-1", offset_from_center: { x: 0.4, y: 0.2, z: 0.05 }, visual_type: "rune", content: "刻痕拼出数字 271。", is_locked: false },
+        { clue_id: "c3", title: "旧日记", surface_id: "table-1", offset_from_center: { x: 0.25, y: 0.08, z: 0.05 }, visual_type: "note", content: "今晚只有一个人知道备用钥匙的位置。", is_locked: false },
+        { clue_id: "c4", title: "密码盒", surface_id: "table-1", offset_from_center: { x: -0.25, y: 0.1, z: 0.0 }, visual_type: "box", content: "盒中藏着最后一页日记。", is_locked: true, unlock_code: "271" }
+      ],
+      suspects: [
+        { suspect_id: "s1", name: "林姨", surface_id: "wall-2", persona_prompt: "你是守屋多年的林姨，紧张但隐瞒了钥匙曾经遗失。只按已知事实回答。" },
+        { suspect_id: "s2", name: "周先生", surface_id: "wall-3", persona_prompt: "你是房客周先生，声称整晚都在客厅，试图掩饰自己听见过争吵。只按已知事实回答。" }
+      ],
+      spatial_audio_events: [
+        { trigger_clue_id: "c1", sound_type: "footsteps", relative_direction: "behind" },
+        { trigger_clue_id: "c3", sound_type: "whisper", relative_direction: "left" }
+      ],
+      truth_summary: "林姨曾取走备用钥匙，但周先生才是写信并藏起日记的人。信件是求助，而非威胁。"
+    };
+
+    let currentCase = JSON.parse(JSON.stringify(FALLBACK_CASE));
+    const discoveredClues = new Set();
+    let boxUnlocked = false;
+    const suspectHistories = {};
+
+    // 3. Three.js 场景初始化
+    const container = document.getElementById("canvas-container");
+    const scene = new THREE.Scene();
+    scene.fog = new THREE.FogExp2(0x060913, 0.08);
+
+    const camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 50);
+    camera.position.set(0, 1.55, 2.1);
+
+    const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+    renderer.setSize(window.innerWidth, window.innerHeight);
+    renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+    container.appendChild(renderer.domElement);
+
+    // 灯光
+    scene.add(new THREE.AmbientLight(0x88aaff, 0.7));
+    const dirLight = new THREE.DirectionalLight(0x4deeea, 1.1);
+    dirLight.position.set(2, 4, 2);
+    scene.add(dirLight);
+    const purpleLight = new THREE.PointLight(0xa78bfa, 1.4, 8);
+    purpleLight.position.set(-1.5, 2.2, -1);
+    scene.add(purpleLight);
+
+    // 扫描波纹圆环
+    const scanRingGeo = new THREE.RingGeometry(0.1, 0.25, 48);
+    scanRingGeo.rotateX(-Math.PI / 2);
+    const scanRingMat = new THREE.MeshBasicMaterial({ color: 0x4deeea, side: THREE.DoubleSide, transparent: true, opacity: 0 });
+    const scanRing = new THREE.Mesh(scanRingGeo, scanRingMat);
+    scanRing.position.y = 0.03;
+    scene.add(scanRing);
+    let scanTime = 99;
+
+    function triggerRoomScan() {
+      scanTime = 0;
+      showToast("📡 正在通过 PlaneTrackingManager 扫描真实房间平面…", "left");
+    }
+
+    // 构建 Mock 客厅物理平面
+    const surfaceMap = {};
+    const interactiveObjects = []; // { mesh, type: 'clue'|'suspect', data, labelEl }
+    const entityGroup = new THREE.Group();
+    scene.add(entityGroup);
+
+    function buildRoomSurfaces() {
+      MOCK_ROOM.surfaces.forEach(s => {
+        surfaceMap[s.id] = s;
+        if (s.type === "floor") {
+          const floorGeo = new THREE.PlaneGeometry(s.extent.width, s.extent.height);
+          floorGeo.rotateX(-Math.PI / 2);
+          const floorMat = new THREE.MeshStandardMaterial({ color: 0x0d1526, roughness: 0.85, metalness: 0.1 });
+          const floorMesh = new THREE.Mesh(floorGeo, floorMat);
+          floorMesh.position.set(s.center.x, s.center.y, s.center.z);
+          scene.add(floorMesh);
+
+          const grid = new THREE.GridHelper(5, 20, 0x4deeea, 0x1e293b);
+          grid.position.y = 0.005;
+          grid.material.opacity = 0.35;
+          grid.material.transparent = true;
+          scene.add(grid);
+        } else if (s.type === "wall") {
+          const wallGeo = new THREE.BoxGeometry(s.extent.width, s.extent.height, 0.06);
+          const wallMat = new THREE.MeshStandardMaterial({
+            color: 0x162038,
+            transparent: true,
+            opacity: 0.55,
+            roughness: 0.6
+          });
+          const wallMesh = new THREE.Mesh(wallGeo, wallMat);
+          wallMesh.position.set(s.center.x, s.center.y, s.center.z);
+          if (s.id === "wall-2" || s.id === "wall-3") wallMesh.rotation.y = Math.PI / 2;
+          scene.add(wallMesh);
+
+          const edges = new THREE.EdgesGeometry(wallGeo);
+          const line = new THREE.LineSegments(edges, new THREE.LineBasicMaterial({ color: 0x38bdf8, transparent: true, opacity: 0.35 }));
+          line.position.copy(wallMesh.position);
+          line.rotation.copy(wallMesh.rotation);
+          scene.add(line);
+        } else if (s.type === "table") {
+          const topGeo = new THREE.BoxGeometry(s.extent.width, 0.06, s.extent.height);
+          const topMat = new THREE.MeshStandardMaterial({ color: 0x293548, roughness: 0.4, metalness: 0.2 });
+          const topMesh = new THREE.Mesh(topGeo, topMat);
+          topMesh.position.set(s.center.x, s.center.y, s.center.z);
+          scene.add(topMesh);
+
+          const topEdge = new THREE.LineSegments(new THREE.EdgesGeometry(topGeo), new THREE.LineBasicMaterial({ color: 0x4deeea, transparent: true, opacity: 0.5 }));
+          topEdge.position.copy(topMesh.position);
+          scene.add(topEdge);
+
+          // 桌腿
+          const legGeo = new THREE.CylinderGeometry(0.025, 0.025, s.center.y, 12);
+          const legMat = new THREE.MeshStandardMaterial({ color: 0x1e293b });
+          [[-0.5, -0.28], [0.5, -0.28], [-0.5, 0.28], [0.5, 0.28]].forEach(([dx, dz]) => {
+            const leg = new THREE.Mesh(legGeo, legMat);
+            leg.position.set(s.center.x + dx, s.center.y / 2, s.center.z + dz);
+            scene.add(leg);
+          });
+        }
+      });
+    }
+
+    // 根据当前剧本生成空间线索与嫌疑人实体
+    function renderCaseEntities() {
+      while (entityGroup.children.length > 0) entityGroup.remove(entityGroup.children[0]);
+      interactiveObjects.length = 0;
+      const labelsLayer = document.getElementById("labels-layer");
+      labelsLayer.innerHTML = "";
+
+      // 平面标签
+      MOCK_ROOM.surfaces.forEach(s => {
+        const el = document.createElement("div");
+        el.className = "world-label surface";
+        el.textContent = `${s.id} (${s.type})`;
+        labelsLayer.appendChild(el);
+        interactiveObjects.push({ pos: new THREE.Vector3(s.center.x, s.center.y + 0.05, s.center.z), labelEl: el, type: "surface" });
+      });
+
+      // 线索实体
+      currentCase.clues.forEach(clue => {
+        const s = surfaceMap[clue.surface_id] || surfaceMap["floor-1"];
+        const off = clue.offset_from_center || { x: 0, y: 0, z: 0 };
+        const pos = new THREE.Vector3(s.center.x + off.x, s.center.y + off.y, s.center.z + off.z);
+
+        let mesh;
+        if (clue.visual_type === "box") {
+          const geo = new THREE.BoxGeometry(0.18, 0.14, 0.18);
+          const mat = new THREE.MeshStandardMaterial({
+            color: clue.is_locked && !boxUnlocked ? 0xf59e0b : 0x34d399,
+            emissive: clue.is_locked && !boxUnlocked ? 0x78350f : 0x065f46,
+            roughness: 0.25,
+            metalness: 0.5
+          });
+          mesh = new THREE.Mesh(geo, mat);
+        } else if (clue.visual_type === "footprint") {
+          const geo = new THREE.RingGeometry(0.08, 0.16, 24);
+          geo.rotateX(-Math.PI / 2);
+          const mat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, side: THREE.DoubleSide, transparent: true, opacity: 0.85 });
+          mesh = new THREE.Mesh(geo, mat);
+        } else if (clue.visual_type === "rune") {
+          const geo = new THREE.PlaneGeometry(0.32, 0.22);
+          const mat = new THREE.MeshBasicMaterial({ color: 0xf472b6, side: THREE.DoubleSide, transparent: true, opacity: 0.75 });
+          mesh = new THREE.Mesh(geo, mat);
+        } else {
+          const geo = new THREE.OctahedronGeometry(0.09);
+          const mat = new THREE.MeshStandardMaterial({ color: 0x4deeea, emissive: 0x0e7490, wireframe: false });
+          mesh = new THREE.Mesh(geo, mat);
+        }
+
+        mesh.position.copy(pos);
+        mesh.userData = { type: "clue", data: clue, baseY: pos.y };
+        entityGroup.add(mesh);
+
+        const el = document.createElement("div");
+        el.className = "world-label" + (clue.is_locked && !boxUnlocked ? " locked" : "");
+        el.textContent = (clue.is_locked && !boxUnlocked ? "🔒 " : "🔍 ") + clue.title;
+        el.onclick = () => selectClue(clue);
+        labelsLayer.appendChild(el);
+
+        interactiveObjects.push({ mesh, pos: mesh.position, labelEl: el, type: "clue", data: clue });
+      });
+
+      // 嫌疑人光球
+      currentCase.suspects.forEach((sup, idx) => {
+        const s = surfaceMap[sup.surface_id] || surfaceMap["wall-2"];
+        const xOffset = s.center.x < 0 ? 0.65 : (s.center.x > 0 ? -0.65 : 0);
+        const pos = new THREE.Vector3(s.center.x + xOffset, 1.35, s.center.z + (idx === 0 ? -0.4 : 0.4));
+
+        const geo = new THREE.SphereGeometry(0.16, 24, 24);
+        const mat = new THREE.MeshStandardMaterial({
+          color: 0xa78bfa,
+          emissive: 0x4c1d95,
+          transparent: true,
+          opacity: 0.88,
+          roughness: 0.2
+        });
+        const mesh = new THREE.Mesh(geo, mat);
+        mesh.position.copy(pos);
+        mesh.userData = { type: "suspect", data: sup, baseY: pos.y };
+        entityGroup.add(mesh);
+
+        const el = document.createElement("div");
+        el.className = "world-label suspect";
+        el.textContent = "🗣️ " + sup.name;
+        el.onclick = () => selectSuspect(sup);
+        labelsLayer.appendChild(el);
+
+        interactiveObjects.push({ mesh, pos: mesh.position, labelEl: el, type: "suspect", data: sup });
+      });
+
+      refreshSidebar();
+    }
+
+    // 刷新左侧栏与顶部信息
+    function refreshSidebar() {
+      document.getElementById("case-title").textContent = currentCase.case_title;
+      document.getElementById("case-narration").textContent = currentCase.opening_narration;
+      document.getElementById("clue-progress").textContent = `${discoveredClues.size} / ${currentCase.clues.length}`;
+
+      const clueList = document.getElementById("clue-list");
+      clueList.innerHTML = "";
+      currentCase.clues.forEach(c => {
+        const div = document.createElement("div");
+        div.className = "entity-item" + (discoveredClues.has(c.clue_id) ? " found" : "");
+        const statusTag = c.is_locked && !boxUnlocked
+          ? `<span class="tag lock">未解锁</span>`
+          : (discoveredClues.has(c.clue_id) ? `<span class="tag ok">已查看</span>` : `<span class="tag">${c.surface_id}</span>`);
+        div.innerHTML = `<span>${c.title}</span>${statusTag}`;
+        div.onclick = () => selectClue(c);
+        clueList.appendChild(div);
+      });
+
+      const supList = document.getElementById("suspect-list");
+      supList.innerHTML = "";
+      currentCase.suspects.forEach(s => {
+        const div = document.createElement("div");
+        div.className = "entity-item";
+        div.innerHTML = `<span>${s.name}</span><span class="tag">盘问</span>`;
+        div.onclick = () => selectSuspect(s);
+        supList.appendChild(div);
+      });
+    }
+
+    // 4. Web Audio 模拟 3D 空间音效
+    let audioCtx = null;
+    function playSpatialAudio(soundType, direction) {
+      try {
+        if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        const now = audioCtx.currentTime;
+        const panner = audioCtx.createStereoPanner();
+        panner.pan.value = direction === "left" ? -0.85 : (direction === "right" ? 0.85 : 0);
+        panner.connect(audioCtx.destination);
+
+        if (soundType === "footsteps") {
+          [0, 0.28, 0.56].forEach(delay => {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = "triangle";
+            osc.frequency.setValueAtTime(110, now + delay);
+            osc.frequency.exponentialRampToValueAtTime(40, now + delay + 0.14);
+            gain.gain.setValueAtTime(0.25, now + delay);
+            gain.gain.exponentialRampToValueAtTime(0.001, now + delay + 0.15);
+            osc.connect(gain);
+            gain.connect(panner);
+            osc.start(now + delay);
+            osc.stop(now + delay + 0.16);
+          });
+        } else {
+          const osc = audioCtx.createOscillator();
+          const gain = audioCtx.createGain();
+          osc.type = "sine";
+          osc.frequency.setValueAtTime(520, now);
+          osc.frequency.exponentialRampToValueAtTime(280, now + 0.65);
+          gain.gain.setValueAtTime(0.12, now);
+          gain.gain.exponentialRampToValueAtTime(0.001, now + 0.7);
+          osc.connect(gain);
+          gain.connect(panner);
+          osc.start(now);
+          osc.stop(now + 0.72);
+        }
+      } catch (e) {}
+      showToast(`🔊 触发 Spatial Audio：${soundType}（方位：${direction}）`);
+    }
+
+    function showToast(text) {
+      const el = document.getElementById("audio-toast");
+      el.textContent = text;
+      el.classList.add("show");
+      clearTimeout(el._timer);
+      el._timer = setTimeout(() => el.classList.remove("show"), 3200);
+    }
+
+    // 5. 交互面板逻辑
+    function selectClue(clue) {
+      discoveredClues.add(clue.clue_id);
+      refreshSidebar();
+
+      const audioEvt = (currentCase.spatial_audio_events || []).find(e => e.trigger_clue_id === clue.clue_id);
+      if (audioEvt) playSpatialAudio(audioEvt.sound_type, audioEvt.relative_direction);
+
+      const panel = document.getElementById("right-panel");
+      document.getElementById("rp-type").textContent = "空间线索";
+      document.getElementById("rp-title").textContent = clue.title;
+      document.getElementById("rp-surface").textContent = `空间锚点：${clue.surface_id} · 类型：${clue.visual_type}`;
+
+      const contentEl = document.getElementById("rp-content");
+      if (clue.is_locked && !boxUnlocked) {
+        contentEl.innerHTML = `
+          <div class="clue-body">${clue.content}<br><br><span style="color:var(--warn)">🔒 该物品已上锁，请输入在房间中找到的密码：</span></div>
+          <div style="display:flex; gap:8px; margin-top:10px;">
+            <input id="unlock-input" placeholder="输入密码（如 271）" />
+            <button class="primary" style="white-space:nowrap;" onclick="tryUnlock('${clue.unlock_code || ""}')">解锁</button>
+          </div>
+          <div id="unlock-msg" style="font-size:12px; margin-top:6px;"></div>
+        `;
+      } else {
+        contentEl.innerHTML = `
+          <div class="clue-body">${clue.content}</div>
+          ${boxUnlocked && clue.is_locked ? `<div class="clue-body" style="margin-top:10px; border-color:var(--success);"><strong style="color:var(--success)">🎉 案件真相解锁：</strong><br>${currentCase.truth_summary}</div>` : ""}
+        `;
+      }
+      panel.classList.add("show");
+    }
+
+    function tryUnlock(code) {
+      const val = document.getElementById("unlock-input").value.trim();
+      const msg = document.getElementById("unlock-msg");
+      if (val === code) {
+        boxUnlocked = true;
+        renderCaseEntities();
+        const lockedClue = currentCase.clues.find(c => c.is_locked);
+        if (lockedClue) selectClue(lockedClue);
+        showToast("🎉 密码正确！已解锁案件最终真相！");
+      } else {
+        msg.style.color = "var(--danger)";
+        msg.textContent = "密码错误，再检查一下墙面或桌面线索吧。";
+      }
+    }
+
+    function selectSuspect(sup) {
+      const panel = document.getElementById("right-panel");
+      document.getElementById("rp-type").textContent = "AI 嫌疑人盘问";
+      document.getElementById("rp-title").textContent = sup.name;
+      document.getElementById("rp-surface").textContent = `锚点位置：${sup.surface_id} 角落`;
+
+      if (!suspectHistories[sup.suspect_id]) {
+        suspectHistories[sup.suspect_id] = [
+          { role: "assistant", text: `（${sup.name}看向你）你想问我关于今晚的什么事？` }
+        ];
+      }
+
+      renderChatPanel(sup);
+      panel.classList.add("show");
+    }
+
+    function renderChatPanel(sup) {
+      const history = suspectHistories[sup.suspect_id];
+      const contentEl = document.getElementById("rp-content");
+      contentEl.innerHTML = `
+        <div style="font-size:11px; color:var(--muted); margin-bottom:8px;">人设提示：${sup.persona_prompt}</div>
+        <div id="chat-box">
+          ${history.map(m => `<div class="msg ${m.role === "user" ? "user" : "ai"}">${m.text}</div>`).join("")}
+        </div>
+        <div style="display:flex; gap:8px; margin-top:10px;">
+          <input id="chat-input" placeholder="输入问题，按回车盘问…" onkeydown="if(event.key==='Enter') sendSuspectQuestion('${sup.suspect_id}')" />
+          <button class="primary" style="white-space:nowrap;" onclick="sendSuspectQuestion('${sup.suspect_id}')">发送</button>
+        </div>
+      `;
+      const box = document.getElementById("chat-box");
+      box.scrollTop = box.scrollHeight;
+    }
+
+    async function sendSuspectQuestion(suspectId) {
+      const input = document.getElementById("chat-input");
+      const q = input.value.trim();
+      if (!q) return;
+      const sup = currentCase.suspects.find(s => s.suspect_id === suspectId);
+      const history = suspectHistories[suspectId];
+      history.push({ role: "user", text: q });
+      renderChatPanel(sup);
+
+      const apiKey = document.getElementById("cfg-key").value.trim();
+      const baseUrl = document.getElementById("cfg-url").value.trim().replace(/\/+$/, "");
+      const model = document.getElementById("cfg-model").value.trim();
+
+      let reply = "";
+      if (apiKey) {
+        try {
+          const res = await fetch(`${baseUrl}/chat/completions`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: "system", content: `${sup.persona_prompt}\n案件：${currentCase.case_title} - ${currentCase.opening_narration}` },
+                ...history.map(m => ({ role: m.role === "user" ? "user" : "assistant", content: m.text }))
+              ]
+            })
+          });
+          const data = await res.json();
+          reply = data.choices?.[0]?.message?.content || "（沉默不语…）";
+        } catch (e) {
+          reply = "（网络请求失败，请检查 API 配置。）";
+        }
+      } else {
+        // 未填 API Key 时的本地演示回复
+        if (q.includes("钥匙") || q.includes("密码")) {
+          reply = sup.name.includes("林") ? "我…我只是几天前不小心把备用钥匙弄丢过，但我发誓今晚没动过桌子上的东西！" : "钥匙的事我可不清楚，我一直在客厅坐着看表。";
+        } else if (q.includes("信") || q.includes("吵")) {
+          reply = sup.name.includes("周") ? "（眼神闪躲）外面雨声那么大，就算有争吵我也听不清啊……那封信只是想提醒你注意安全。" : "那封信我没拆开过，你问问周先生吧，他离桌子最近。";
+        } else {
+          reply = `（${sup.name}低声说道）今晚的事没那么简单，你去看看墙上和桌上的线索就明白了。`;
+        }
+      }
+      history.push({ role: "assistant", text: reply });
+      renderChatPanel(sup);
+    }
+
+    function closeRightPanel() {
+      document.getElementById("right-panel").classList.remove("show");
+    }
+
+    // 6. 大模型生成新剧本
+    function openApiModal() { document.getElementById("modal-backdrop").classList.add("show"); }
+    function closeApiModal() { document.getElementById("modal-backdrop").classList.remove("show"); }
+
+    function resetFallbackCase() {
+      currentCase = JSON.parse(JSON.stringify(FALLBACK_CASE));
+      discoveredClues.clear();
+      boxUnlocked = false;
+      closeRightPanel();
+      closeApiModal();
+      renderCaseEntities();
+      triggerRoomScan();
+    }
+
+    async function generateWithAI() {
+      const apiKey = document.getElementById("cfg-key").value.trim();
+      const baseUrl = document.getElementById("cfg-url").value.trim().replace(/\/+$/, "");
+      const model = document.getElementById("cfg-model").value.trim();
+      if (!apiKey) {
+        alert("请先输入 API Key，或直接点击“使用内置《雨夜来信》”体验。");
+        return;
+      }
+      const btn = document.getElementById("gen-btn");
+      btn.textContent = "AI 编排中…";
+      btn.disabled = true;
+      try {
+        const systemPrompt = `你是一位“空间沉浸式微恐悬疑剧本杀”AI 导演。根据传入的真实房间平面数据（surfaces），现场编排一个 3~5 分钟通关的悬疑推理短剧。要求：1）将 4 个虚拟线索精准绑定到真实的 surface_id 上（floor-1, wall-1, table-1）；2）设计 2 名锚定在 wall-2 和 wall-3 的 AI 嫌疑人（附带 persona_prompt）；3）设计至少 2 个空间音效事件。仅输出合法 JSON，结构包含 case_title, opening_narration, clues(含 clue_id, title, surface_id, offset_from_center{x,y,z}, visual_type[footprint|rune|note|box], content, is_locked, unlock_code), suspects(含 suspect_id, name, surface_id, persona_prompt), spatial_audio_events(含 trigger_clue_id, sound_type, relative_direction), truth_summary。`;
+        const res = await fetch(`${baseUrl}/chat/completions`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", "Authorization": `Bearer ${apiKey}` },
+          body: JSON.stringify({
+            model,
+            response_format: { type: "json_object" },
+            messages: [
+              { role: "system", content: systemPrompt },
+              { role: "user", content: JSON.stringify(MOCK_ROOM) }
+            ]
+          })
+        });
+        const data = await res.json();
+        const raw = data.choices[0].message.content.replace(/^```json\s*/i, "").replace(/```$/i, "").trim();
+        currentCase = JSON.parse(raw);
+        discoveredClues.clear();
+        boxUnlocked = false;
+        closeRightPanel();
+        closeApiModal();
+        renderCaseEntities();
+        triggerRoomScan();
+      } catch (e) {
+        alert("生成失败：" + e.message);
+      } finally {
+        btn.textContent = "调用 AI 生成";
+        btn.disabled = false;
+      }
+    }
+
+    // 7. 相机控制（拖拽旋转 + WASD 移动 + Raycaster 点击）
+    let yaw = 0, pitch = -0.12;
+    let isDragging = false, dragDist = 0, prevX = 0, prevY = 0;
+    const keys = {};
+
+    container.addEventListener("pointerdown", e => {
+      isDragging = true;
+      dragDist = 0;
+      prevX = e.clientX;
+      prevY = e.clientY;
+    });
+    window.addEventListener("pointermove", e => {
+      if (!isDragging) return;
+      const dx = e.clientX - prevX;
+      const dy = e.clientY - prevY;
+      dragDist += Math.hypot(dx, dy);
+      yaw -= dx * 0.004;
+      pitch = Math.max(-1.1, Math.min(1.0, pitch - dy * 0.004));
+      prevX = e.clientX;
+      prevY = e.clientY;
+    });
+    window.addEventListener("pointerup", e => {
+      if (!isDragging) return;
+      isDragging = false;
+      if (dragDist < 6) {
+        const mouse = new THREE.Vector2((e.clientX / window.innerWidth) * 2 - 1, -(e.clientY / window.innerHeight) * 2 + 1);
+        const raycaster = new THREE.Raycaster();
+        raycaster.setFromCamera(mouse, camera);
+        const hits = raycaster.intersectObjects(entityGroup.children, false);
+        if (hits.length > 0) {
+          const ud = hits[0].object.userData;
+          if (ud.type === "clue") selectClue(ud.data);
+          if (ud.type === "suspect") selectSuspect(ud.data);
+        }
+      }
+    });
+
+    window.addEventListener("keydown", e => { keys[e.key.toLowerCase()] = true; });
+    window.addEventListener("keyup", e => { keys[e.key.toLowerCase()] = false; });
+    window.addEventListener("resize", () => {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    });
+
+    // 8. 动画循环
+    const clock = new THREE.Clock();
+    function animate() {
+      requestAnimationFrame(animate);
+      const dt = clock.getDelta();
+      const elapsed = clock.getElapsedTime();
+
+      // 相机朝向与 WASD 移动
+      camera.rotation.order = "YXZ";
+      camera.rotation.y = yaw;
+      camera.rotation.x = pitch;
+
+      const forward = new THREE.Vector3(-Math.sin(yaw), 0, -Math.cos(yaw));
+      const right = new THREE.Vector3(Math.cos(yaw), 0, -Math.sin(yaw));
+      const speed = 2.2 * dt;
+      if (keys["w"]) camera.position.addScaledVector(forward, speed);
+      if (keys["s"]) camera.position.addScaledVector(forward, -speed);
+      if (keys["a"]) camera.position.addScaledVector(right, -speed);
+      if (keys["d"]) camera.position.addScaledVector(right, speed);
+      camera.position.x = Math.max(-2.1, Math.min(2.1, camera.position.x));
+      camera.position.z = Math.max(-1.6, Math.min(2.2, camera.position.z));
+
+      // 实体悬浮动画
+      entityGroup.children.forEach((m, i) => {
+        if (m.userData.type === "suspect" || m.userData.data?.visual_type === "note") {
+          m.position.y = m.userData.baseY + Math.sin(elapsed * 2 + i) * 0.04;
+          m.rotation.y += dt * 0.8;
+        }
+      });
+
+      // 扫描波纹
+      if (scanTime < 1.8) {
+        scanTime += dt;
+        const s = 1 + scanTime * 12;
+        scanRing.scale.set(s, s, s);
+        scanRingMat.opacity = Math.max(0, 0.85 * (1 - scanTime / 1.8));
+      } else {
+        scanRingMat.opacity = 0;
+      }
+
+      // 更新 2D 悬浮标签投影位置
+      interactiveObjects.forEach(item => {
+        const v = item.pos.clone().project(camera);
+        if (v.z > 1 || v.z < -1) {
+          item.labelEl.style.display = "none";
+        } else {
+          item.labelEl.style.display = "block";
+          item.labelEl.style.left = `${(v.x * 0.5 + 0.5) * window.innerWidth}px`;
+          item.labelEl.style.top = `${(-v.y * 0.5 + 0.5) * window.innerHeight - (item.type === "surface" ? 0 : 18)}px`;
+        }
+      });
+
+      renderer.render(scene, camera);
+    }
+
+    buildRoomSurfaces();
+    renderCaseEntities();
+    animate();
+  </script>
+</body>
+</html>
