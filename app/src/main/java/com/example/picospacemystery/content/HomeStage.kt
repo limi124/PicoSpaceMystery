@@ -75,6 +75,8 @@ fun HomeStage() {
     var selectedClue by remember { mutableStateOf<ClueItem?>(null) }
     var selectedSuspect by remember { mutableStateOf<SuspectItem?>(null) }
     var floatingClueToast by remember { mutableStateOf<ClueItem?>(null) }
+    var floatingSuspectDialog by remember { mutableStateOf<SuspectItem?>(null) }
+    var suspectSpotLabel by remember { mutableStateOf("右侧暗角") }
     var discoveredClueIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var decryptedClueIds by remember { mutableStateOf<Set<String>>(emptySet()) }
     var activeToolId by remember { mutableStateOf<String?>(null) }
@@ -107,12 +109,27 @@ fun HomeStage() {
         selectedSuspect = null
         selectedClue = null
         floatingClueToast = null
+        floatingSuspectDialog = null
         dialDigits = listOf(0, 0, 0)
         passwordFeedback = ""
         currentViewpointIndex = 0
         room3D.setViewpointOffset(Vector3(0f, 0f, 0f))
         audioSynth.playRoomTransition(roomIdx)
         sceneSyncToken += 1
+    }
+
+    fun triggerSuspectRandomPatrol(res: OrchestrationResult) {
+        val roomLevel = res.script.rooms.getOrNull(currentRoomIndex) ?: return
+        val suspect = roomLevel.suspects.firstOrNull() ?: return
+        val latestReply = suspectChats[suspect.suspectId]?.lastOrNull()?.second ?: suspect.initialGreeting
+        val spot = room3D.relocateSuspectRandomly(
+            suspectName = suspect.name,
+            dialogue = latestReply,
+            palette = res.visualAssets.palette
+        )
+        suspectSpotLabel = spot.label
+        audioSynth.playClueDiscovered(spot.directionAudioHint)
+        audioBanner = "👣 【${suspect.name}】在密室中随机走动，现身于【${spot.label}】！转头寻找并与TA对话。"
     }
 
     fun decryptClueWithTool(clue: ClueItem, res: OrchestrationResult) {
@@ -162,6 +179,23 @@ fun HomeStage() {
 
         selectedSuspect = null
         selectedClue = clue
+        floatingSuspectDialog = null
+
+        // 每次玩家搜获新线索时，驻场嫌疑人也有概率在 3D 房间内随机巡逻走动并刷新头顶 3D 气泡反应！
+        val suspect = roomLevel.suspects.firstOrNull()
+        if (suspect != null && from3DSpace) {
+            val reaction = when {
+                clue.isTool -> "你居然找到了${clue.title}？小心别乱照墙面！"
+                needsTool -> "光凭肉眼你是看不穿那层伪装的…"
+                else -> "咳…没想到连${clue.title}都被你翻出来了！"
+            }
+            val spot = room3D.relocateSuspectRandomly(
+                suspectName = suspect.name,
+                dialogue = reaction,
+                palette = res.visualAssets.palette
+            )
+            suspectSpotLabel = spot.label
+        }
 
         // 关键体验优化：在 3D 环顾模式下点击普通/工具线索，不强弹全屏大面板糊脸，而是弹出底部轻量拾取卡！
         if (from3DSpace && hudCollapsed && !clue.isLocked) {
@@ -172,7 +206,7 @@ fun HomeStage() {
         }
     }
 
-    fun selectSuspectById(suspect: SuspectItem) {
+    fun selectSuspectById(suspect: SuspectItem, from3DSpace: Boolean = false) {
         selectedClue = null
         floatingClueToast = null
         selectedSuspect = suspect
@@ -181,7 +215,17 @@ fun HomeStage() {
                 "assistant" to "（${suspect.name}警惕地打量着你）${suspect.initialGreeting}"
             )
         }
-        hudCollapsed = false
+        val latestReply = suspectChats[suspect.suspectId]?.lastOrNull()?.second ?: suspect.initialGreeting
+        orchestrationResult?.let { res ->
+            room3D.updateSuspectSpeechBubble(suspect.name, latestReply, res.visualAssets.palette)
+            suspectSpotLabel = room3D.getCurrentSuspectSpot().label
+        }
+        if (from3DSpace && hudCollapsed) {
+            floatingSuspectDialog = suspect
+        } else {
+            floatingSuspectDialog = null
+            hudCollapsed = false
+        }
     }
 
     fun launchMultiAgentPipeline() {
@@ -236,7 +280,7 @@ fun HomeStage() {
                             }
                         }
                         "suspect" -> {
-                            roomLevel.suspects.firstOrNull()?.let { selectSuspectById(it) }
+                            roomLevel.suspects.firstOrNull()?.let { selectSuspectById(it, from3DSpace = true) }
                         }
                         "teleport" -> {
                             switchViewpoint(target.second)
@@ -350,6 +394,122 @@ fun HomeStage() {
                                     }
                                 }
 
+                                // 3D 空间现场嫌疑人轻量对话与随机巡逻卡片（点击 3D 人物或头顶气泡直接展开对话，不遮挡 3D 视野）
+                                val activeFloatingSuspect = floatingSuspectDialog
+                                if (activeFloatingSuspect != null && res != null) {
+                                    val keyEvidence = curRoom?.clues?.firstOrNull { it.clueId == activeFloatingSuspect.keyEvidenceClueId }
+                                    val hasKeyEvidence = keyEvidence != null && discoveredClueIds.contains(keyEvidence.clueId)
+                                    val isConfronted = confrontedSuspectIds.contains(activeFloatingSuspect.suspectId)
+                                    val lastMsg = suspectChats[activeFloatingSuspect.suspectId]?.lastOrNull()?.second
+                                        ?: activeFloatingSuspect.initialGreeting
+
+                                    Column(
+                                        modifier = Modifier
+                                            .width(920.dp)
+                                            .clip(RoundedCornerShape(20.dp))
+                                            .background(Color(0xF20B1120))
+                                            .border(1.5.dp, Color(0xFFA78BFA), RoundedCornerShape(20.dp))
+                                            .padding(18.dp),
+                                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                                    ) {
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Text(
+                                                text = "🗣️ 3D 现场对话：${activeFloatingSuspect.name}（当前闪现点位：$suspectSpotLabel）",
+                                                fontSize = 17.sp,
+                                                fontWeight = FontWeight.Bold,
+                                                color = Color(0xFFA78BFA)
+                                            )
+                                            SpatialActionButton(
+                                                text = "🎲 让人物随机走动换位",
+                                                accent = Color(0xFF38BDF8),
+                                                onClick = { triggerSuspectRandomPatrol(res) }
+                                            )
+                                        }
+                                        Text(
+                                            text = "「$lastMsg」",
+                                            fontSize = 14.sp,
+                                            color = Color.White,
+                                            lineHeight = 20.sp
+                                        )
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                        ) {
+                                            activeFloatingSuspect.quickQuestions.take(3).forEach { (qText, aText) ->
+                                                SpatialActionButton(
+                                                    text = "💬 ${qText.take(12)}",
+                                                    accent = Color(0xFF38BDF8),
+                                                    onClick = {
+                                                        val prev = suspectChats[activeFloatingSuspect.suspectId].orEmpty()
+                                                        suspectChats[activeFloatingSuspect.suspectId] = prev + ("user" to qText) + ("assistant" to aText)
+                                                        room3D.updateSuspectSpeechBubble(activeFloatingSuspect.name, aText, res.visualAssets.palette)
+                                                        audioSynth.playDialClick(3)
+                                                    }
+                                                )
+                                            }
+                                            if (hasKeyEvidence && keyEvidence != null) {
+                                                SpatialActionButton(
+                                                    text = if (isConfronted) "✅ 已破防口供" else "📢 出示铁证【${keyEvidence.title.take(6)}】",
+                                                    accent = Color(0xFFFBBF24),
+                                                    filled = true,
+                                                    onClick = {
+                                                        val prev = suspectChats[activeFloatingSuspect.suspectId].orEmpty()
+                                                        suspectChats[activeFloatingSuspect.suspectId] = prev +
+                                                            ("user" to "📢【出示铁证：${keyEvidence.title}】${activeFloatingSuspect.evidenceConfrontQuestion}") +
+                                                            ("assistant" to "💥（心理防线击破）${activeFloatingSuspect.breakthroughReply}")
+                                                        confrontedSuspectIds = confrontedSuspectIds + activeFloatingSuspect.suspectId
+                                                        room3D.updateSuspectSpeechBubble(
+                                                            activeFloatingSuspect.name,
+                                                            activeFloatingSuspect.breakthroughReply,
+                                                            res.visualAssets.palette
+                                                        )
+                                                        audioSynth.playToolDecrypt()
+                                                    }
+                                                )
+                                            }
+                                        }
+                                        Row(
+                                            modifier = Modifier.fillMaxWidth(),
+                                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Box(modifier = Modifier.weight(1f)) {
+                                                SpatialInputField("在 3D 房间内直接向 ${activeFloatingSuspect.name} 自由提问…", chatInput) { chatInput = it }
+                                            }
+                                            SpatialActionButton(
+                                                text = if (isAskingSuspect) "思考中…" else "🗣️ 发送提问",
+                                                accent = Color(0xFFA78BFA),
+                                                filled = true,
+                                                onClick = {
+                                                    val q = chatInput.trim()
+                                                    if (q.isNotBlank() && !isAskingSuspect) {
+                                                        chatInput = ""
+                                                        val prev = suspectChats[activeFloatingSuspect.suspectId].orEmpty()
+                                                        suspectChats[activeFloatingSuspect.suspectId] = prev + ("user" to q)
+                                                        isAskingSuspect = true
+                                                        scope.launch {
+                                                            val reply = orchestrator.askSuspect(activeFloatingSuspect, res.script, prev, q, llmConfig)
+                                                            suspectChats[activeFloatingSuspect.suspectId] =
+                                                                suspectChats[activeFloatingSuspect.suspectId].orEmpty() + ("assistant" to reply)
+                                                            room3D.updateSuspectSpeechBubble(activeFloatingSuspect.name, reply, res.visualAssets.palette)
+                                                            isAskingSuspect = false
+                                                        }
+                                                    }
+                                                }
+                                            )
+                                            SpatialActionButton(
+                                                text = "✕ 关闭对话",
+                                                accent = Color(0xFF94A3B8),
+                                                onClick = { floatingSuspectDialog = null }
+                                            )
+                                        }
+                                    }
+                                }
+
                                 // 底部常驻轻量空间探索与瞬移胶囊栏
                                 Row(
                                     modifier = Modifier
@@ -376,12 +536,20 @@ fun HomeStage() {
                                             onClick = { switchViewpoint(vp.index) }
                                         )
                                     }
+                                    if (res != null) {
+                                        SpatialActionButton(
+                                            text = "🎲 人物随机换位 ($suspectSpotLabel)",
+                                            accent = Color(0xFFA78BFA),
+                                            onClick = { triggerSuspectRandomPatrol(res) }
+                                        )
+                                    }
                                     SpatialActionButton(
                                         text = "📖 展开控制面板",
                                         accent = Color(0xFF4DEEEA),
                                         filled = true,
                                         onClick = {
                                             floatingClueToast = null
+                                            floatingSuspectDialog = null
                                             hudCollapsed = false
                                         }
                                     )
@@ -457,6 +625,7 @@ fun HomeStage() {
                                         onQuickQuestion = { suspect, qText, aText ->
                                             val prev = suspectChats[suspect.suspectId].orEmpty()
                                             suspectChats[suspect.suspectId] = prev + ("user" to qText) + ("assistant" to aText)
+                                            room3D.updateSuspectSpeechBubble(suspect.name, aText, res.visualAssets.palette)
                                             audioSynth.playDialClick(3)
                                         },
                                         onConfrontSuspect = { suspect, evidenceTitle ->
@@ -465,6 +634,7 @@ fun HomeStage() {
                                                 ("user" to "📢【出示铁证：$evidenceTitle】${suspect.evidenceConfrontQuestion}") +
                                                 ("assistant" to "💥（心理防线击破）${suspect.breakthroughReply}")
                                             confrontedSuspectIds = confrontedSuspectIds + suspect.suspectId
+                                            room3D.updateSuspectSpeechBubble(suspect.name, suspect.breakthroughReply, res.visualAssets.palette)
                                             audioSynth.playToolDecrypt()
                                             audioBanner = "💥 已用关键物证击破【${suspect.name}】心理防线，获取核心密码换算规则！"
                                         },
@@ -512,6 +682,7 @@ fun HomeStage() {
                                                 scope.launch {
                                                     val reply = orchestrator.askSuspect(suspect, res.script, prev, q, llmConfig)
                                                     suspectChats[suspect.suspectId] = suspectChats[suspect.suspectId].orEmpty() + ("assistant" to reply)
+                                                    room3D.updateSuspectSpeechBubble(suspect.name, reply, res.visualAssets.palette)
                                                     isAskingSuspect = false
                                                 }
                                             }
@@ -544,6 +715,7 @@ fun HomeStage() {
             if (res != null && sceneSyncToken != renderedSyncToken) {
                 val doorUnlocked = unlockedDoorForRooms.contains(currentRoomIndex)
                 room3D.applyRoomStage(res, currentRoomIndex, doorUnlocked)
+                suspectSpotLabel = room3D.getCurrentSuspectSpot().label
                 renderedSyncToken = sceneSyncToken
             }
         }

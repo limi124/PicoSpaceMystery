@@ -51,8 +51,66 @@ class EscapeRoom3DScene {
 
     val clueEntities = mutableMapOf<Int, Entity>()
     val clueSignEntities = mutableMapOf<Int, Entity>()
+    var suspectPedestalEntity: Entity? = null
     var suspectEntity: Entity? = null
+    var suspectSpeechBubbleEntity: Entity? = null
     var usdzBoxEntity: Entity? = null
+
+    data class SuspectSpatialSpot(
+        val label: String,
+        val pedestalPos: Vector3,
+        val suspectPos: Vector3,
+        val bubblePos: Vector3,
+        val rotation: EulerAngles,
+        val directionAudioHint: String
+    )
+
+    // 360° 空间随机出现/巡逻点位：嫌疑人进入房间或巡逻时会随机出现在不同角落（右侧墙角、左侧书架/门廊旁、身后暗角、书桌右后侧、左后方柱旁）
+    val suspectSpawnSpots: List<SuspectSpatialSpot> = listOf(
+        SuspectSpatialSpot(
+            label = "右侧暗角",
+            pedestalPos = Vector3(1.68f, 0.41f, -1.55f),
+            suspectPos = Vector3(1.68f, 1.30f, -1.55f),
+            bubblePos = Vector3(1.56f, 1.88f, -1.48f),
+            rotation = EulerAngles(0f, -32f, 0f),
+            directionAudioHint = "right"
+        ),
+        SuspectSpatialSpot(
+            label = "左侧廊柱旁",
+            pedestalPos = Vector3(-1.68f, 0.41f, -1.35f),
+            suspectPos = Vector3(-1.68f, 1.30f, -1.35f),
+            bubblePos = Vector3(-1.54f, 1.88f, -1.28f),
+            rotation = EulerAngles(0f, 36f, 0f),
+            directionAudioHint = "left"
+        ),
+        SuspectSpatialSpot(
+            label = "身后右后方",
+            pedestalPos = Vector3(1.32f, 0.41f, 0.95f),
+            suspectPos = Vector3(1.32f, 1.30f, 0.95f),
+            bubblePos = Vector3(1.20f, 1.88f, 0.85f),
+            rotation = EulerAngles(0f, -142f, 0f),
+            directionAudioHint = "behind"
+        ),
+        SuspectSpatialSpot(
+            label = "身后左后方",
+            pedestalPos = Vector3(-1.28f, 0.41f, 0.92f),
+            suspectPos = Vector3(-1.28f, 1.30f, 0.92f),
+            bubblePos = Vector3(-1.16f, 1.88f, 0.82f),
+            rotation = EulerAngles(0f, 142f, 0f),
+            directionAudioHint = "behind"
+        ),
+        SuspectSpatialSpot(
+            label = "中央书桌旁",
+            pedestalPos = Vector3(0.96f, 0.41f, -1.25f),
+            suspectPos = Vector3(0.96f, 1.30f, -1.25f),
+            bubblePos = Vector3(0.92f, 1.88f, -1.18f),
+            rotation = EulerAngles(0f, -18f, 0f),
+            directionAudioHint = "center"
+        )
+    )
+
+    var currentSuspectSpotIndex: Int = 0
+        private set
 
     // Entity -> ("clue"|"suspect"|"door"|"teleport", index)
     val interactiveTargetMap = mutableMapOf<Entity, Pair<String, Int>>()
@@ -268,32 +326,47 @@ class EscapeRoom3DScene {
             content.addEntity(signEntity)
         }
 
-        // 加载书桌上的 asset://box.usdz 3D 宝箱模型，并将其本身与所有子 Entity 都注册到 interactiveTargetMap ("clue" to 3)
-        runCatching {
-            val usdzBox = Entity.loadSuspend("asset://box.usdz")
-            val boxPos = Vector3(0f, 0.88f, -1.42f)
-            val boxRot = EulerAngles(0f, 25f, 0f)
-            val boxScale = Vector3(0.16f, 0.16f, 0.16f)
-            registerTransform(usdzBox, boxPos, boxRot, boxScale)
-            attachInteractiveClueRecursively(usdzBox, 3)
-            usdzBoxEntity = usdzBox
-            content.addEntity(usdzBox)
-        }
-
-        // 房间驻场 AI 嫌疑人：右侧立式底座 + 竖幅角色立牌
-        val suspectPedestal = createTexturedBox(
-            size = Vector3(0.48f, 0.82f, 0.24f),
-            position = Vector3(1.68f, 0.41f, -1.55f),
-            bitmap = tableBmp,
-            rotation = EulerAngles(0f, -32f, 0f)
+        // 书桌中央额外放置一个立体 3D 机关宝箱盖（与 clue 3 同步贴上 AI 生成的宝箱贴图）
+        val chestTop = createInteractiveBox(
+            size = Vector3(0.32f, 0.22f, 0.28f),
+            position = Vector3(0f, 0.88f, -1.38f),
+            rotation = EulerAngles(0f, 18f, 0f),
+            bitmap = tableBmp
         )
-        content.addEntity(suspectPedestal)
+        interactiveTargetMap[chestTop] = "clue" to 3
+        usdzBoxEntity = chestTop
+        content.addEntity(chestTop)
+
+        // 房间驻场 AI 嫌疑人：立式底座 + 竖幅角色立牌 + 头顶 3D 实时对话气泡（支持 360° 随机出现与巡逻走动）
+        val initialSpot = suspectSpawnSpots.first()
+        suspectPedestalEntity = createTexturedBox(
+            size = Vector3(0.48f, 0.82f, 0.24f),
+            position = initialSpot.pedestalPos,
+            bitmap = tableBmp,
+            rotation = initialSpot.rotation
+        ).also { content.addEntity(it) }
 
         suspectEntity = createInteractiveBox(
             size = Vector3(0.60f, 0.76f, 0.05f),
-            position = Vector3(1.68f, 1.30f, -1.55f),
-            rotation = EulerAngles(0f, -32f, 0f),
+            position = initialSpot.suspectPos,
+            rotation = initialSpot.rotation,
             bitmap = wallBmp
+        ).also {
+            interactiveTargetMap[it] = "suspect" to 0
+            content.addEntity(it)
+        }
+
+        val initialBubbleBmp = art.synthesizeSuspectSpeechBubbleBitmap(
+            suspectName = "神秘驻场人",
+            spotLabel = initialSpot.label,
+            dialogue = "你有什么事？点击我或气泡即可现场对话盘问。",
+            palette = initialPalette
+        )
+        suspectSpeechBubbleEntity = createInteractiveBox(
+            size = Vector3(0.64f, 0.30f, 0.02f),
+            position = initialSpot.bubblePos,
+            rotation = initialSpot.rotation,
+            bitmap = initialBubbleBmp
         ).also {
             interactiveTargetMap[it] = "suspect" to 0
             content.addEntity(it)
@@ -426,6 +499,9 @@ class EscapeRoom3DScene {
             val entity = clueEntities[idx] ?: return@forEachIndexed
             val propBmp = assets.clueBitmaps[clue.clueId] ?: bundle.tableBitmap
             applyBitmapToEntity(entity, propBmp)
+            if (idx == 3 || clue.isLocked || clue.visualType == "box") {
+                applyBitmapToEntity(usdzBoxEntity, propBmp)
+            }
 
             val (pos, rot) = transforms.getOrNull(idx) ?: (Vector3(0f, 0.8f, -1.2f) to EulerAngles(0f, 0f, 0f))
             // 后墙上的线索调整为竖幅壁挂尺寸，地面/桌面保持原有自然比例
@@ -449,8 +525,58 @@ class EscapeRoom3DScene {
         if (suspect != null) {
             val supBmp = assets.suspectBitmaps[suspect.suspectId] ?: bundle.wallBitmap
             applyBitmapToEntity(suspectEntity, supBmp)
+            applyBitmapToEntity(suspectPedestalEntity, bundle.tableBitmap)
+            relocateSuspectRandomly(
+                suspectName = suspect.name,
+                dialogue = suspect.initialGreeting,
+                palette = assets.palette
+            )
         }
     }
+
+    /**
+     * 让驻场嫌疑人在房间 5 个 360° 空间点位中随机出现/走动巡逻，并同步更新其头顶 3D 实时对话气泡！
+     */
+    fun relocateSuspectRandomly(
+        suspectName: String,
+        dialogue: String,
+        palette: ThemePalette
+    ): SuspectSpatialSpot {
+        val candidateIndices = suspectSpawnSpots.indices.filter { it != currentSuspectSpotIndex }
+        val nextIndex = if (candidateIndices.isNotEmpty()) candidateIndices.random() else 0
+        currentSuspectSpotIndex = nextIndex
+        val spot = suspectSpawnSpots[nextIndex]
+
+        suspectPedestalEntity?.let { registerTransform(it, spot.pedestalPos, spot.rotation) }
+        suspectEntity?.let { registerTransform(it, spot.suspectPos, spot.rotation) }
+        suspectSpeechBubbleEntity?.let { registerTransform(it, spot.bubblePos, spot.rotation) }
+
+        updateSuspectSpeechBubble(suspectName, dialogue, palette)
+        return spot
+    }
+
+    /**
+     * 实时刷新 3D 空间内嫌疑人头顶的对话气泡内容
+     */
+    fun updateSuspectSpeechBubble(
+        suspectName: String,
+        dialogue: String,
+        palette: ThemePalette
+    ) {
+        val bubble = suspectSpeechBubbleEntity ?: return
+        val spot = suspectSpawnSpots.getOrNull(currentSuspectSpotIndex) ?: suspectSpawnSpots.first()
+        val art = ArtTextureAgent()
+        val bmp = art.synthesizeSuspectSpeechBubbleBitmap(
+            suspectName = suspectName,
+            spotLabel = spot.label,
+            dialogue = dialogue,
+            palette = palette
+        )
+        applyBitmapToEntity(bubble, bmp)
+    }
+
+    fun getCurrentSuspectSpot(): SuspectSpatialSpot =
+        suspectSpawnSpots.getOrNull(currentSuspectSpotIndex) ?: suspectSpawnSpots.first()
 
     /**
      * 当玩家点击某个 3D 线索时：

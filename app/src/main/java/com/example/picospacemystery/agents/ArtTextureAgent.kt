@@ -82,10 +82,11 @@ class ArtTextureAgent {
         val suspectBitmaps = mutableMapOf<String, Bitmap>()
         var remoteCount = 0
         val remoteWallBitmaps = mutableMapOf<Int, Bitmap>()
+        val remoteDoorBitmaps = mutableMapOf<Int, Bitmap>()
 
         if (useRemoteImageApi && config.imageApiKey.isNotBlank()) {
             coroutineScope {
-                // 1) 并行生成 3 间密室的 AI 环境墙面油画/概念贴图 + 3 名驻场嫌疑人 AI 肖像立绘
+                // 1) 并行生成 3 间密室的 AI 环境墙面贴图 + 3 扇密室大门 AI 贴图 + 3 名驻场嫌疑人 AI 肖像立绘 + 全部 12 件道具（工具/壁画/证物/机关宝箱）AI 贴图
                 val roomWallJobs = script.rooms.map { room ->
                     async {
                         val prompt = room.wallImagePrompt.ifBlank {
@@ -93,7 +94,20 @@ class ArtTextureAgent {
                         }
                         val bmp = tryGenerateRemoteTexture(prompt, config)
                         if (bmp != null) {
-                            remoteWallBitmaps[room.roomIndex] = bmp
+                            synchronized(remoteWallBitmaps) {
+                                remoteWallBitmaps[room.roomIndex] = bmp
+                            }
+                        }
+                    }
+                }
+                val roomDoorJobs = script.rooms.map { room ->
+                    async {
+                        val prompt = "Heavy ornate mystery escape room door texture, ${script.worldview}, ${room.roomName}, mechanical gears and glowing runes, front view, game asset illustration, dramatic lighting, no text"
+                        val bmp = tryGenerateRemoteTexture(prompt, config)
+                        if (bmp != null) {
+                            synchronized(remoteDoorBitmaps) {
+                                remoteDoorBitmaps[room.roomIndex] = bmp
+                            }
                         }
                     }
                 }
@@ -115,25 +129,34 @@ class ArtTextureAgent {
                         }
                     }
                 }
-                val heroClueJobs = script.rooms.mapNotNull { room ->
+                val allClueJobs = script.rooms.flatMap { room ->
                     val rPalette = paletteForRoom(basePalette, room.roomIndex)
-                    val clue = room.clues.firstOrNull() ?: return@mapNotNull null
-                    async {
-                        val prompt = clue.imagePrompt.ifBlank {
-                            "Game prop close up illustration of ${clue.title} in ${script.worldview}, mystery clue item, dramatic lighting"
-                        }
-                        val rawBmp = tryGenerateRemoteTexture(prompt, config)
-                        if (rawBmp != null) {
-                            val framed = frameRemoteClueBitmap(rawBmp, clue.title, clue.isLocked, rPalette)
-                            synchronized(clueBitmaps) {
-                                clueBitmaps[clue.clueId] = framed
-                                clueTextures[clue.clueId] = framed.asImageBitmap()
+                    room.clues.map { clue ->
+                        async {
+                            val defaultPrompt = when {
+                                clue.isLocked || clue.visualType == "box" ->
+                                    "Ornate mechanical puzzle treasure chest lockbox in ${script.worldview}, ${clue.title}, glowing combination dials, game prop close-up, rich lighting"
+                                clue.isTool ->
+                                    "Detective inspection tool prop ${clue.title} in ${script.worldview}, high detail game icon illustration, dramatic rim light"
+                                clue.visualType == "rune" ->
+                                    "Mysterious glowing cipher mural or inscription ${clue.title} on wall in ${script.worldview}, game texture art"
+                                else ->
+                                    "Secret evidence dossier prop ${clue.title} in ${script.worldview}, tabletop mystery game item, dramatic lighting"
+                            }
+                            val prompt = clue.imagePrompt.ifBlank { defaultPrompt }
+                            val rawBmp = tryGenerateRemoteTexture(prompt, config)
+                            if (rawBmp != null) {
+                                val framed = frameRemoteClueBitmap(rawBmp, clue.title, clue.isLocked, rPalette)
+                                synchronized(clueBitmaps) {
+                                    clueBitmaps[clue.clueId] = framed
+                                    clueTextures[clue.clueId] = framed.asImageBitmap()
+                                }
                             }
                         }
                     }
                 }
-                (roomWallJobs + suspectJobs + heroClueJobs).awaitAll()
-                remoteCount = remoteWallBitmaps.size + suspectBitmaps.size + clueBitmaps.size
+                (roomWallJobs + roomDoorJobs + suspectJobs + allClueJobs).awaitAll()
+                remoteCount = remoteWallBitmaps.size + remoteDoorBitmaps.size + suspectBitmaps.size + clueBitmaps.size
             }
         }
 
@@ -175,12 +198,15 @@ class ArtTextureAgent {
         val roomBundles = script.rooms.map { room ->
             val rPalette = paletteForRoom(basePalette, room.roomIndex)
             val nextRoomTitle = script.rooms.getOrNull(room.roomIndex + 1)?.roomName ?: "通关真相出口"
+            val remoteDoor = remoteDoorBitmaps[room.roomIndex]
             RoomVisualBundle(
                 wallBitmap = remoteWallBitmaps[room.roomIndex] ?: synthesizeRoomSurfaceBitmap("wall", room.roomName, rPalette),
                 floorBitmap = synthesizeRoomSurfaceBitmap("floor", room.roomName, rPalette),
                 tableBitmap = synthesizeRoomSurfaceBitmap("table", room.roomName, rPalette),
-                doorLockedBitmap = synthesizeDoorBitmap(room.roomName, nextRoomTitle, room.doorUnlockCode, false, rPalette),
-                doorUnlockedBitmap = synthesizeDoorBitmap(room.roomName, nextRoomTitle, room.doorUnlockCode, true, rPalette)
+                doorLockedBitmap = remoteDoor?.let { frameRemoteDoorBitmap(it, nextRoomTitle, false, rPalette) }
+                    ?: synthesizeDoorBitmap(room.roomName, nextRoomTitle, room.doorUnlockCode, false, rPalette),
+                doorUnlockedBitmap = remoteDoor?.let { frameRemoteDoorBitmap(it, nextRoomTitle, true, rPalette) }
+                    ?: synthesizeDoorBitmap(room.roomName, nextRoomTitle, room.doorUnlockCode, true, rPalette)
             )
         }
 
@@ -313,6 +339,145 @@ class ArtTextureAgent {
             textAlign = Paint.Align.CENTER
         }
         canvas.drawText(name.take(10), size / 2f, size - 40f, namePaint)
+        return bmp
+    }
+
+    /**
+     * 将 AI 生成的大门原图封装为带锁定/开启发光机械转盘与通往提示的 3D 门扇贴图
+     */
+    private fun frameRemoteDoorBitmap(
+        raw: Bitmap,
+        nextRoomName: String,
+        unlocked: Boolean,
+        palette: ThemePalette
+    ): Bitmap {
+        val w = 512
+        val h = 768
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        val scaled = Bitmap.createScaledBitmap(raw, w, h, true)
+        canvas.drawBitmap(scaled, 0f, 0f, null)
+
+        val frameColor = if (unlocked) 0xFF34D399.toInt() else palette.primaryHex.toInt()
+        val framePaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = frameColor
+            style = Paint.Style.STROKE
+            strokeWidth = 14f
+        }
+        canvas.drawRoundRect(RectF(16f, 16f, w - 16f, h - 16f), 24f, 24f, framePaint)
+
+        val badgeBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xE6060B16.toInt()
+            style = Paint.Style.FILL
+        }
+        canvas.drawRoundRect(RectF(62f, h * 0.36f, w - 62f, h * 0.49f), 22f, 22f, badgeBg)
+        canvas.drawRoundRect(RectF(62f, h * 0.36f, w - 62f, h * 0.49f), 22f, 22f, framePaint)
+
+        val statusPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (unlocked) 0xFF6EE7B7.toInt() else 0xFFFBBF24.toInt()
+            textSize = 36f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(if (unlocked) "🔓 大门已开启" else "🔒 密室大门锁定", w / 2f, h * 0.44f, statusPaint)
+
+        canvas.drawRoundRect(RectF(44f, h - 186f, w - 44f, h - 60f), 18f, 18f, badgeBg)
+        val subPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            textSize = 28f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("通往：${nextRoomName.take(11)}", w / 2f, h - 132f, subPaint)
+
+        val actionPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = if (unlocked) 0xFF34D399.toInt() else 0xFFCBD5E1.toInt()
+            textSize = 23f
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText(
+            if (unlocked) "👉 点击此大门推门进入下一房间" else "集齐本房 3 处线索解开锁匣",
+            w / 2f,
+            h - 86f,
+            actionPaint
+        )
+        return bmp
+    }
+
+    /**
+     * 3D 空间嫌疑人头顶实时对话气泡贴图（支持自动折行、当前驻点标签与点击直接对话提示）
+     */
+    fun synthesizeSuspectSpeechBubbleBitmap(
+        suspectName: String,
+        spotLabel: String,
+        dialogue: String,
+        palette: ThemePalette
+    ): Bitmap {
+        val w = 512
+        val h = 256
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+
+        val bg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            shader = LinearGradient(
+                0f, 0f, 0f, h.toFloat(),
+                0xFA0C152B.toInt(),
+                0xF2060A14.toInt(),
+                Shader.TileMode.CLAMP
+            )
+            style = Paint.Style.FILL
+        }
+        val border = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = palette.accentHex.toInt()
+            style = Paint.Style.STROKE
+            strokeWidth = 8f
+        }
+        val rect = RectF(10f, 10f, w - 10f, h - 10f)
+        canvas.drawRoundRect(rect, 28f, 28f, bg)
+        canvas.drawRoundRect(rect, 28f, 28f, border)
+
+        val headerBg = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0x3838BDF8
+            style = Paint.Style.FILL
+        }
+        canvas.drawRoundRect(RectF(28f, 24f, w - 28f, 70f), 14f, 14f, headerBg)
+
+        val headerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFF7DD3FC.toInt()
+            textSize = 24f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("🗣️ ${suspectName.take(8)} · [$spotLabel]", w / 2f, 56f, headerPaint)
+
+        val clean = dialogue
+            .replace("\n", " ")
+            .replace("（", "(")
+            .replace("）", ")")
+            .trim()
+        val line1 = clean.take(15)
+        val line2 = clean.drop(15).take(15) + if (clean.length > 30) "…" else ""
+
+        val textPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFFFFFF.toInt()
+            textSize = 27f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("“$line1", w / 2f, 118f, textPaint)
+        if (line2.isNotBlank()) {
+            canvas.drawText("$line2”", w / 2f, 158f, textPaint)
+        } else {
+            canvas.drawText("”", w / 2f, 158f, textPaint)
+        }
+
+        val hintPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = 0xFFFDE68A.toInt()
+            textSize = 21f
+            isFakeBoldText = true
+            textAlign = Paint.Align.CENTER
+        }
+        canvas.drawText("👉 点击人物或气泡 · 现场盘问 / 换位", w / 2f, 218f, hintPaint)
         return bmp
     }
 
