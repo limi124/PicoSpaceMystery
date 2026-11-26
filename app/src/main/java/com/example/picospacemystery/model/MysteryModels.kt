@@ -170,7 +170,7 @@ data class LlmConfig(
 )
 
 data class CustomGameConfig(
-    val worldview: String = "赛博朋克实验室",
+    val worldview: String = "民国雨夜古宅",
     val plotStyle: String = "悬疑烧脑",
     val customRoles: String = ""
 )

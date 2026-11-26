@@ -37,6 +37,7 @@ class EscapeRoom3DScene {
     var leftWallEntity: Entity? = null
     var rightWallEntity: Entity? = null
     var tableEntity: Entity? = null
+    var doorFrameEntity: Entity? = null
     var doorEntity: Entity? = null
 
     val pillarEntities = mutableListOf<Entity>()
@@ -167,9 +168,9 @@ class EscapeRoom3DScene {
         val signPlaceholderBmp = art.synthesizeClueSignboardBitmap("空间线索", "点击搜证", false, initialPalette)
 
         val lampGlowBmp = synthesizeSolidGlowBitmap(0xFFFFE082.toInt(), 0xFFF59E0B.toInt())
-        val cyanGlowBmp = synthesizeSolidGlowBitmap(0xFF4DEEEA.toInt(), 0xFF0284C7.toInt())
-        val purpleGlowBmp = synthesizeSolidGlowBitmap(0xFFD8B4FE.toInt(), 0xFF7E22CE.toInt())
-        val emeraldGlowBmp = synthesizeSolidGlowBitmap(0xFF6EE7B7.toInt(), 0xFF059669.toInt())
+        val primaryGlowBmp = synthesizeSolidGlowBitmap(initialPalette.primaryHex.toInt(), 0xFF78350F.toInt())
+        val accentGlowBmp = synthesizeSolidGlowBitmap(initialPalette.accentHex.toInt(), 0xFF451A03.toInt())
+        val emeraldGlowBmp = synthesizeSolidGlowBitmap(0xFFFBBF24.toInt(), initialPalette.primaryHex.toInt())
 
         // ① 360° 全闭合空间架构：地板 + 前、后、左、右四面环绕墙体 + 4 根角落立柱 + 顶部 3 根横向天花板横梁
         floorEntity = createTexturedBox(
@@ -228,12 +229,11 @@ class EscapeRoom3DScene {
         }
 
         // 正面墙左侧：3D 密室过道大门 + 门框
-        val doorFrame = createTexturedBox(
+        doorFrameEntity = createTexturedBox(
             size = Vector3(1.12f, 1.98f, 0.06f),
             position = Vector3(-1.05f, 1.02f, -2.48f),
             bitmap = tableBmp
-        )
-        content.addEntity(doorFrame)
+        ).also { content.addEntity(it) }
 
         doorEntity = createInteractiveBox(
             size = Vector3(0.98f, 1.86f, 0.08f),
@@ -278,7 +278,7 @@ class EscapeRoom3DScene {
         }
 
         // ② 三间房差异化 3D 专属家具组（通过 Entity.setEnabled 随房间切换）
-        buildRoomSpecificProps(content, tableBmp, wallBmp, cyanGlowBmp, purpleGlowBmp, emeraldGlowBmp)
+        buildRoomSpecificProps(content, tableBmp, wallBmp, primaryGlowBmp, accentGlowBmp, emeraldGlowBmp)
 
         // ③ 4 个分散隐藏在 360° 空间里的 3D 线索实体 + 悬浮在道具上方的全息立牌（默认 setEnabled(false) 防剧透！）
         val initialTransforms = roomClueTransforms[0]
@@ -326,16 +326,8 @@ class EscapeRoom3DScene {
             content.addEntity(signEntity)
         }
 
-        // 书桌中央额外放置一个立体 3D 机关宝箱盖（与 clue 3 同步贴上 AI 生成的宝箱贴图）
-        val chestTop = createInteractiveBox(
-            size = Vector3(0.32f, 0.22f, 0.28f),
-            position = Vector3(0f, 0.88f, -1.38f),
-            rotation = EulerAngles(0f, 18f, 0f),
-            bitmap = tableBmp
-        )
-        interactiveTargetMap[chestTop] = "clue" to 3
-        usdzBoxEntity = chestTop
-        content.addEntity(chestTop)
+        // 书桌机关锁匣已由 c3 (clueEntities[3]) 唯一承载并贴上 AI 宝箱贴图，不再重复创建第二个箱子实体
+        usdzBoxEntity = null
 
         // 房间驻场 AI 嫌疑人：立式底座 + 竖幅角色立牌 + 头顶 3D 实时对话气泡（支持 360° 随机出现与巡逻走动）
         val initialSpot = suspectSpawnSpots.first()
@@ -385,7 +377,7 @@ class EscapeRoom3DScene {
                 radius = 0.24f,
                 height = 0.02f,
                 position = pos,
-                bitmap = if (idx == 0) emeraldGlowBmp else cyanGlowBmp
+                bitmap = if (idx == 0) emeraldGlowBmp else primaryGlowBmp
             )
             teleportRingEntities.add(ring)
             interactiveTargetMap[ring] = "teleport" to idx
@@ -483,6 +475,22 @@ class EscapeRoom3DScene {
         applyBitmapToEntity(tableEntity, bundle.tableBitmap)
         pillarEntities.forEach { applyBitmapToEntity(it, bundle.tableBitmap) }
         ceilingBeamEntities.forEach { applyBitmapToEntity(it, bundle.tableBitmap) }
+        doorFrameEntity?.let { applyBitmapToEntity(it, bundle.tableBitmap) }
+
+        val themePrimaryGlow = synthesizeSolidGlowBitmap(assets.palette.primaryHex.toInt(), assets.palette.surfaceTintHex.toInt())
+        val themeAccentGlow = synthesizeSolidGlowBitmap(assets.palette.accentHex.toInt(), assets.palette.surfaceTintHex.toInt())
+        teleportRingEntities.forEachIndexed { idx, ring ->
+            applyBitmapToEntity(ring, if (idx == 0) themePrimaryGlow else themeAccentGlow)
+        }
+        room0Props.forEachIndexed { idx, prop ->
+            val bmp = when (idx) {
+                4 -> themePrimaryGlow
+                5 -> themeAccentGlow
+                7 -> bundle.wallBitmap
+                else -> bundle.tableBitmap
+            }
+            applyBitmapToEntity(prop, bmp)
+        }
 
         // 切换三间房差异化专属 3D 家具组
         room0Props.forEach { it.setEnabled(roomIndex == 0) }

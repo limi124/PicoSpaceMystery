@@ -17,6 +17,9 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -33,6 +36,9 @@ import kotlin.math.sin
  */
 class ArtTextureAgent {
 
+    // 限制硅基流动 Kolors 并发度为 2，防止瞬发 20+ 请求触发 429 IPM 限流
+    private val imageApiSemaphore = Semaphore(2)
+
     fun resolvePalette(worldview: String): ThemePalette {
         val w = worldview.lowercase()
         return when {
@@ -47,7 +53,7 @@ class ArtTextureAgent {
             w.contains("蒸汽") || w.contains("列车") ->
                 ThemePalette(0xFFD97706, 0xFF38BDF8, 0xFF291D12, "蒸汽黄铜齿轮")
             else ->
-                ThemePalette(0xFFF59E0B, 0xFFEF4444, 0xFF2B1D16, "民国复古护墙板")
+                ThemePalette(0xFFD97706, 0xFFB91C1C, 0xFF261710, "民国雕花红木护墙")
         }
     }
 
@@ -56,14 +62,14 @@ class ArtTextureAgent {
             0 -> base
             1 -> ThemePalette(
                 primaryHex = base.accentHex,
-                accentHex = 0xFF38BDF8,
-                surfaceTintHex = 0xFF161F33,
+                accentHex = base.primaryHex,
+                surfaceTintHex = base.surfaceTintHex,
                 styleLabel = "${base.styleLabel} · 二层暗室"
             )
             else -> ThemePalette(
                 primaryHex = 0xFFFBBF24,
-                accentHex = 0xFF34D399,
-                surfaceTintHex = 0xFF26152B,
+                accentHex = base.accentHex,
+                surfaceTintHex = base.surfaceTintHex,
                 styleLabel = "${base.styleLabel} · 终极核心室"
             )
         }
@@ -86,76 +92,25 @@ class ArtTextureAgent {
 
         if (useRemoteImageApi && config.imageApiKey.isNotBlank()) {
             coroutineScope {
-                // 1) 并行生成 3 间密室的 AI 环境墙面贴图 + 3 扇密室大门 AI 贴图 + 3 名驻场嫌疑人 AI 肖像立绘 + 全部 12 件道具（工具/壁画/证物/机关宝箱）AI 贴图
-                val roomWallJobs = script.rooms.map { room ->
-                    async {
-                        val prompt = room.wallImagePrompt.ifBlank {
-                            "Atmospheric dark mystery room wall environment texture, ${script.worldview}, ${room.roomName}, game concept art, rich lighting, no text"
-                        }
-                        val bmp = tryGenerateRemoteTexture(prompt, config)
-                        if (bmp != null) {
-                            synchronized(remoteWallBitmaps) {
-                                remoteWallBitmaps[room.roomIndex] = bmp
-                            }
-                        }
-                    }
+                // 优先为【第 1 间房】生成全部 6 张核心 AI 贴图（墙面 + 大门 + 驻场人物 + 4 件线索道具含宝箱），
+                // 并用 imageApiSemaphore(2) + 429 自动重试限流，确保第 1 间房一打开 100% 全部是真实 AI 贴图且绝不被硅基流动 429 拦截！
+                val firstRoom = script.rooms.firstOrNull()
+                if (firstRoom != null) {
+                    val rPalette = paletteForRoom(basePalette, firstRoom.roomIndex)
+                    val jobs = buildRoomRemoteJobs(
+                        script = script,
+                        room = firstRoom,
+                        rPalette = rPalette,
+                        config = config,
+                        remoteWallBitmaps = remoteWallBitmaps,
+                        remoteDoorBitmaps = remoteDoorBitmaps,
+                        suspectBitmaps = suspectBitmaps,
+                        suspectPortraits = suspectPortraits,
+                        clueBitmaps = clueBitmaps,
+                        clueTextures = clueTextures
+                    )
+                    jobs.awaitAll()
                 }
-                val roomDoorJobs = script.rooms.map { room ->
-                    async {
-                        val prompt = "Heavy ornate mystery escape room door texture, ${script.worldview}, ${room.roomName}, mechanical gears and glowing runes, front view, game asset illustration, dramatic lighting, no text"
-                        val bmp = tryGenerateRemoteTexture(prompt, config)
-                        if (bmp != null) {
-                            synchronized(remoteDoorBitmaps) {
-                                remoteDoorBitmaps[room.roomIndex] = bmp
-                            }
-                        }
-                    }
-                }
-                val suspectJobs = script.rooms.flatMap { room ->
-                    val rPalette = paletteForRoom(basePalette, room.roomIndex)
-                    room.suspects.map { suspect ->
-                        async {
-                            val prompt = suspect.imagePrompt.ifBlank {
-                                "Mystery detective game character portrait of ${suspect.name} in ${script.worldview}, dramatic rim lighting, digital painting, half body"
-                            }
-                            val rawBmp = tryGenerateRemoteTexture(prompt, config)
-                            if (rawBmp != null) {
-                                val framed = frameRemoteSuspectBitmap(rawBmp, suspect.name, room.roomName.substringBefore("："), rPalette)
-                                synchronized(suspectBitmaps) {
-                                    suspectBitmaps[suspect.suspectId] = framed
-                                    suspectPortraits[suspect.suspectId] = framed.asImageBitmap()
-                                }
-                            }
-                        }
-                    }
-                }
-                val allClueJobs = script.rooms.flatMap { room ->
-                    val rPalette = paletteForRoom(basePalette, room.roomIndex)
-                    room.clues.map { clue ->
-                        async {
-                            val defaultPrompt = when {
-                                clue.isLocked || clue.visualType == "box" ->
-                                    "Ornate mechanical puzzle treasure chest lockbox in ${script.worldview}, ${clue.title}, glowing combination dials, game prop close-up, rich lighting"
-                                clue.isTool ->
-                                    "Detective inspection tool prop ${clue.title} in ${script.worldview}, high detail game icon illustration, dramatic rim light"
-                                clue.visualType == "rune" ->
-                                    "Mysterious glowing cipher mural or inscription ${clue.title} on wall in ${script.worldview}, game texture art"
-                                else ->
-                                    "Secret evidence dossier prop ${clue.title} in ${script.worldview}, tabletop mystery game item, dramatic lighting"
-                            }
-                            val prompt = clue.imagePrompt.ifBlank { defaultPrompt }
-                            val rawBmp = tryGenerateRemoteTexture(prompt, config)
-                            if (rawBmp != null) {
-                                val framed = frameRemoteClueBitmap(rawBmp, clue.title, clue.isLocked, rPalette)
-                                synchronized(clueBitmaps) {
-                                    clueBitmaps[clue.clueId] = framed
-                                    clueTextures[clue.clueId] = framed.asImageBitmap()
-                                }
-                            }
-                        }
-                    }
-                }
-                (roomWallJobs + roomDoorJobs + suspectJobs + allClueJobs).awaitAll()
                 remoteCount = remoteWallBitmaps.size + remoteDoorBitmaps.size + suspectBitmaps.size + clueBitmaps.size
             }
         }
@@ -227,49 +182,209 @@ class ArtTextureAgent {
         )
     }
 
-    private suspend fun tryGenerateRemoteTexture(prompt: String, config: LlmConfig): Bitmap? =
-        withContext(Dispatchers.IO) {
-            runCatching {
-                val url = URL(config.imageBaseUrl.trimEnd('/') + "/images/generations")
-                val conn = (url.openConnection() as HttpURLConnection).apply {
-                    requestMethod = "POST"
-                    connectTimeout = 8000
-                    readTimeout = 22000
-                    doOutput = true
-                    setRequestProperty("Content-Type", "application/json")
-                    setRequestProperty("Authorization", "Bearer ${config.imageApiKey}")
-                }
-                val body = JSONObject().apply {
-                    put("model", config.imageModel)
-                    put("prompt", prompt)
-                    put("image_size", "1024x1024")
-                }
-                conn.outputStream.use { it.write(body.toString().toByteArray()) }
-                if (conn.responseCode !in 200..299) return@runCatching null
-                val resp = conn.inputStream.bufferedReader().readText()
-                val root = JSONObject(resp)
-                val itemObj = root.optJSONArray("images")?.optJSONObject(0)
-                    ?: root.optJSONArray("data")?.optJSONObject(0)
-                    ?: return@runCatching null
+    /**
+     * 后台渐进式为第 2、3 间密室补充生成硅基流动 Kolors AI 贴图（墙面、大门、人物立绘、4 件道具含宝箱）
+     */
+    suspend fun generateRoomRemoteAssets(
+        script: CaseScript,
+        roomIndex: Int,
+        currentAssets: GeneratedVisualAssets,
+        config: LlmConfig
+    ): GeneratedVisualAssets? = withContext(Dispatchers.Default) {
+        if (config.imageApiKey.isBlank()) return@withContext null
+        val room = script.rooms.getOrNull(roomIndex) ?: return@withContext null
+        val basePalette = currentAssets.palette
+        val rPalette = paletteForRoom(basePalette, roomIndex)
 
-                val imgUrl = itemObj.optString("url")
-                val b64 = itemObj.optString("b64_json")
-                val decoded = when {
-                    imgUrl.isNotBlank() -> {
-                        val dlConn = (URL(imgUrl).openConnection() as HttpURLConnection).apply {
-                            connectTimeout = 8000
-                            readTimeout = 15000
-                        }
-                        dlConn.inputStream.use { BitmapFactory.decodeStream(it) }
-                    }
-                    b64.isNotBlank() -> {
-                        val bytes = Base64.decode(b64, Base64.DEFAULT)
-                        BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
-                    }
-                    else -> null
+        val remoteWallBitmaps = mutableMapOf<Int, Bitmap>()
+        val remoteDoorBitmaps = mutableMapOf<Int, Bitmap>()
+        val clueTextures = currentAssets.clueTextures.toMutableMap()
+        val suspectPortraits = currentAssets.suspectPortraits.toMutableMap()
+        val clueBitmaps = currentAssets.clueBitmaps.toMutableMap()
+        val suspectBitmaps = currentAssets.suspectBitmaps.toMutableMap()
+
+        coroutineScope {
+            val jobs = buildRoomRemoteJobs(
+                script = script,
+                room = room,
+                rPalette = rPalette,
+                config = config,
+                remoteWallBitmaps = remoteWallBitmaps,
+                remoteDoorBitmaps = remoteDoorBitmaps,
+                suspectBitmaps = suspectBitmaps,
+                suspectPortraits = suspectPortraits,
+                clueBitmaps = clueBitmaps,
+                clueTextures = clueTextures
+            )
+            jobs.awaitAll()
+        }
+
+        val addedCount = remoteWallBitmaps.size + remoteDoorBitmaps.size
+        if (addedCount == 0 && clueBitmaps.size == currentAssets.clueBitmaps.size) return@withContext null
+
+        val nextRoomTitle = script.rooms.getOrNull(roomIndex + 1)?.roomName ?: "通关真相出口"
+        val oldBundle = currentAssets.roomBundles.getOrNull(roomIndex) ?: return@withContext null
+        val remoteDoor = remoteDoorBitmaps[roomIndex]
+        val newBundle = oldBundle.copy(
+            wallBitmap = remoteWallBitmaps[roomIndex] ?: oldBundle.wallBitmap,
+            doorLockedBitmap = remoteDoor?.let { frameRemoteDoorBitmap(it, nextRoomTitle, false, rPalette) } ?: oldBundle.doorLockedBitmap,
+            doorUnlockedBitmap = remoteDoor?.let { frameRemoteDoorBitmap(it, nextRoomTitle, true, rPalette) } ?: oldBundle.doorUnlockedBitmap
+        )
+        val newRoomBundles = currentAssets.roomBundles.toMutableList().also {
+            it[roomIndex] = newBundle
+        }
+
+        currentAssets.copy(
+            clueTextures = clueTextures,
+            suspectPortraits = suspectPortraits,
+            clueBitmaps = clueBitmaps,
+            suspectBitmaps = suspectBitmaps,
+            roomBundles = newRoomBundles
+        )
+    }
+
+    private fun kotlinx.coroutines.CoroutineScope.buildRoomRemoteJobs(
+        script: CaseScript,
+        room: EscapeRoomLevel,
+        rPalette: ThemePalette,
+        config: LlmConfig,
+        remoteWallBitmaps: MutableMap<Int, Bitmap>,
+        remoteDoorBitmaps: MutableMap<Int, Bitmap>,
+        suspectBitmaps: MutableMap<String, Bitmap>,
+        suspectPortraits: MutableMap<String, ImageBitmap>,
+        clueBitmaps: MutableMap<String, Bitmap>,
+        clueTextures: MutableMap<String, ImageBitmap>
+    ): List<kotlinx.coroutines.Deferred<Unit>> {
+        val styleDesc = when {
+            script.worldview.contains("民国") || script.worldview.contains("古宅") ->
+                "1920s Republic of China vintage Chinese mansion, carved dark mahogany wood, brass lanterns, antique oil painting style"
+            script.worldview.contains("深海") || script.worldview.contains("潜艇") || script.worldview.contains("克苏鲁") ->
+                "Deep sea submarine bioluminescent eldritch horror style, oxidized brass and abyssal coral"
+            script.worldview.contains("魔法") || script.worldview.contains("地窖") || script.worldview.contains("学院") ->
+                "Gothic magic academy stone dungeon, arcane glowing runes, medieval alchemy style"
+            else ->
+                "Cyberpunk sci-fi laboratory style, dark metallic armor and holographic circuits"
+        }
+
+        val wallJob = async {
+            val prompt = room.wallImagePrompt.ifBlank {
+                "Atmospheric interior room wall texture, $styleDesc, ${room.roomName}, rich warm dramatic lighting, game environment art, no text"
+            }
+            val bmp = tryGenerateRemoteTexture(prompt, config)
+            if (bmp != null) {
+                synchronized(remoteWallBitmaps) {
+                    remoteWallBitmaps[room.roomIndex] = bmp
                 }
-                decoded?.let { Bitmap.createScaledBitmap(it, 512, 512, true) }
-            }.getOrNull()
+            }
+        }
+        val doorJob = async {
+            val prompt = "Heavy ornate mystery escape room door, $styleDesc, ${room.roomName}, antique brass lock and intricate carvings, front elevation view, game asset illustration, no text"
+            val bmp = tryGenerateRemoteTexture(prompt, config)
+            if (bmp != null) {
+                synchronized(remoteDoorBitmaps) {
+                    remoteDoorBitmaps[room.roomIndex] = bmp
+                }
+            }
+        }
+        val suspectJobs = room.suspects.map { suspect ->
+            async {
+                val prompt = suspect.imagePrompt.ifBlank {
+                    "Mystery detective game character portrait of ${suspect.name}, $styleDesc, half body portrait, expressive face, dramatic rim lighting, masterpiece digital painting"
+                }
+                val rawBmp = tryGenerateRemoteTexture(prompt, config)
+                if (rawBmp != null) {
+                    val framed = frameRemoteSuspectBitmap(rawBmp, suspect.name, room.roomName.substringBefore("："), rPalette)
+                    synchronized(suspectBitmaps) {
+                        suspectBitmaps[suspect.suspectId] = framed
+                        suspectPortraits[suspect.suspectId] = framed.asImageBitmap()
+                    }
+                }
+            }
+        }
+        val clueJobs = room.clues.map { clue ->
+            async {
+                val defaultPrompt = when {
+                    clue.isLocked || clue.visualType == "box" ->
+                        "Ornate mechanical puzzle treasure chest lockbox, $styleDesc, ${clue.title}, antique brass combination lock, game prop close-up"
+                    clue.isTool ->
+                        "Detective inspection tool prop ${clue.title}, $styleDesc, high detail game item illustration, dramatic lighting"
+                    clue.visualType == "rune" ->
+                        "Mysterious secret mural or hidden inscription ${clue.title} on wall, $styleDesc, game clue artwork"
+                    else ->
+                        "Secret vintage evidence dossier prop ${clue.title}, $styleDesc, tabletop mystery game item, dramatic lighting"
+                }
+                val prompt = clue.imagePrompt.ifBlank { defaultPrompt }
+                val rawBmp = tryGenerateRemoteTexture(prompt, config)
+                if (rawBmp != null) {
+                    val framed = frameRemoteClueBitmap(rawBmp, clue.title, clue.isLocked, rPalette)
+                    synchronized(clueBitmaps) {
+                        clueBitmaps[clue.clueId] = framed
+                        clueTextures[clue.clueId] = framed.asImageBitmap()
+                    }
+                }
+            }
+        }
+        return listOf(wallJob, doorJob) + suspectJobs + clueJobs
+    }
+
+    private suspend fun tryGenerateRemoteTexture(prompt: String, config: LlmConfig): Bitmap? =
+        imageApiSemaphore.withPermit {
+            withContext(Dispatchers.IO) {
+                // 自动重试最多 3 次，若遇 429 IPM 限流则退避等待后重试
+                for (attempt in 0..2) {
+                    val bmp = runCatching {
+                        val url = URL(config.imageBaseUrl.trimEnd('/') + "/images/generations")
+                        val conn = (url.openConnection() as HttpURLConnection).apply {
+                            requestMethod = "POST"
+                            connectTimeout = 8000
+                            readTimeout = 22000
+                            doOutput = true
+                            setRequestProperty("Content-Type", "application/json")
+                            setRequestProperty("Authorization", "Bearer ${config.imageApiKey}")
+                        }
+                        val body = JSONObject().apply {
+                            put("model", config.imageModel)
+                            put("prompt", prompt)
+                            put("image_size", "512x512")
+                        }
+                        conn.outputStream.use { it.write(body.toString().toByteArray()) }
+                        val code = conn.responseCode
+                        if (code == 429) {
+                            return@runCatching null
+                        }
+                        if (code !in 200..299) return@runCatching null
+                        val resp = conn.inputStream.bufferedReader().readText()
+                        val root = JSONObject(resp)
+                        val itemObj = root.optJSONArray("images")?.optJSONObject(0)
+                            ?: root.optJSONArray("data")?.optJSONObject(0)
+                            ?: return@runCatching null
+
+                        val imgUrl = itemObj.optString("url")
+                        val b64 = itemObj.optString("b64_json")
+                        val decoded = when {
+                            imgUrl.isNotBlank() -> {
+                                val dlConn = (URL(imgUrl).openConnection() as HttpURLConnection).apply {
+                                    connectTimeout = 8000
+                                    readTimeout = 15000
+                                }
+                                dlConn.inputStream.use { BitmapFactory.decodeStream(it) }
+                            }
+                            b64.isNotBlank() -> {
+                                val bytes = Base64.decode(b64, Base64.DEFAULT)
+                                BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                            }
+                            else -> null
+                        }
+                        decoded?.let { Bitmap.createScaledBitmap(it, 512, 512, true) }
+                    }.getOrNull()
+                    if (bmp != null) {
+                        delay(450)
+                        return@withContext bmp
+                    }
+                    delay(1500L * (attempt + 1))
+                }
+                null
+            }
         }
 
     private fun frameRemoteClueBitmap(raw: Bitmap, title: String, isLocked: Boolean, palette: ThemePalette): Bitmap {

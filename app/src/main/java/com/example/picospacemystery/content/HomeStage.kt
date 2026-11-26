@@ -261,6 +261,25 @@ fun HomeStage() {
             orchestrationResult = result
             enterRoom(0, result)
             phase = StagePhase.PLAYING
+
+            // 后台渐进式为第 2、3 间密室补充生成硅基流动 Kolors AI 贴图，既避免一次性 20+ 并发触发 429，又保证后两间房也拥有全套 AI 贴图
+            if (useRemoteImageApi && llmConfig.imageApiKey.isNotBlank()) {
+                for (bgRoomIdx in 1 until result.script.rooms.size) {
+                    val curRes = orchestrationResult ?: break
+                    val updatedAssets = artAgent.generateRoomRemoteAssets(
+                        script = curRes.script,
+                        roomIndex = bgRoomIdx,
+                        currentAssets = curRes.visualAssets,
+                        config = llmConfig
+                    )
+                    if (updatedAssets != null) {
+                        orchestrationResult = curRes.copy(visualAssets = updatedAssets)
+                        if (currentRoomIndex == bgRoomIdx) {
+                            sceneSyncToken += 1
+                        }
+                    }
+                }
+            }
         }
     }
 
