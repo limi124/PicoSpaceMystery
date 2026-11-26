@@ -32,6 +32,7 @@ import com.pico.spatial.core.math.Vector3
  */
 class EscapeRoom3DScene {
     var floorEntity: Entity? = null
+    var ceilingEntity: Entity? = null
     var frontWallEntity: Entity? = null
     var backWallEntity: Entity? = null
     var leftWallEntity: Entity? = null
@@ -44,6 +45,7 @@ class EscapeRoom3DScene {
     val ceilingBeamEntities = mutableListOf<Entity>()
     val deskLampEntities = mutableListOf<Entity>()
     val teleportRingEntities = mutableListOf<Entity>()
+    var ceilingLightEntity: Entity? = null
 
     // 三间房差异化专属 3D 家具组
     val room0Props = mutableListOf<Entity>()
@@ -172,72 +174,84 @@ class EscapeRoom3DScene {
         val accentGlowBmp = synthesizeSolidGlowBitmap(initialPalette.accentHex.toInt(), 0xFF451A03.toInt())
         val emeraldGlowBmp = synthesizeSolidGlowBitmap(0xFFFBBF24.toInt(), initialPalette.primaryHex.toInt())
 
-        // ① 360° 全闭合空间架构：地板 + 前、后、左、右四面环绕墙体 + 4 根角落立柱 + 顶部 3 根横向天花板横梁
+        // ① 360° 六面全闭合空间架构：地板 + 整面封顶天花板 + 前、后、左、右四面环绕墙体 + 4 根角落立柱 + 3 根横向横梁 + 顶灯
+        // 扩大房间净空间至 5.6m × 5.2m × 3.0m，确保玩家在任何机位环顾都不会穿墙或飘出密室外！
         floorEntity = createTexturedBox(
-            size = Vector3(4.8f, 0.04f, 4.2f),
-            position = Vector3(0f, 0.0f, -0.5f),
+            size = Vector3(5.6f, 0.08f, 5.2f),
+            position = Vector3(0f, -0.02f, -0.35f),
+            bitmap = floorBmp
+        ).also { content.addEntity(it) }
+
+        ceilingEntity = createTexturedBox(
+            size = Vector3(5.6f, 0.08f, 5.2f),
+            position = Vector3(0f, 3.0f, -0.35f),
             bitmap = floorBmp
         ).also { content.addEntity(it) }
 
         frontWallEntity = createTexturedBox(
-            size = Vector3(4.8f, 2.7f, 0.08f),
-            position = Vector3(0f, 1.35f, -2.55f),
+            size = Vector3(5.6f, 3.1f, 0.12f),
+            position = Vector3(0f, 1.50f, -2.95f),
             bitmap = wallBmp
         ).also { content.addEntity(it) }
 
         backWallEntity = createTexturedBox(
-            size = Vector3(4.8f, 2.7f, 0.08f),
-            position = Vector3(0f, 1.35f, 1.60f),
+            size = Vector3(5.6f, 3.1f, 0.12f),
+            position = Vector3(0f, 1.50f, 2.25f),
             bitmap = wallBmp
         ).also { content.addEntity(it) }
 
         leftWallEntity = createTexturedBox(
-            size = Vector3(0.08f, 2.7f, 4.2f),
-            position = Vector3(-2.4f, 1.35f, -0.5f),
+            size = Vector3(0.12f, 3.1f, 5.2f),
+            position = Vector3(-2.8f, 1.50f, -0.35f),
             bitmap = wallBmp
         ).also { content.addEntity(it) }
 
         rightWallEntity = createTexturedBox(
-            size = Vector3(0.08f, 2.7f, 4.2f),
-            position = Vector3(2.4f, 1.35f, -0.5f),
+            size = Vector3(0.12f, 3.1f, 5.2f),
+            position = Vector3(2.8f, 1.50f, -0.35f),
             bitmap = wallBmp
         ).also { content.addEntity(it) }
 
         // 四角建筑立柱
         pillarEntities.clear()
         listOf(
-            Vector3(-2.22f, 1.35f, -2.38f),
-            Vector3(2.22f, 1.35f, -2.38f),
-            Vector3(-2.22f, 1.35f, 1.42f),
-            Vector3(2.22f, 1.35f, 1.42f)
+            Vector3(-2.62f, 1.50f, -2.76f),
+            Vector3(2.62f, 1.50f, -2.76f),
+            Vector3(-2.62f, 1.50f, 2.06f),
+            Vector3(2.62f, 1.50f, 2.06f)
         ).forEach { pos ->
-            val pillar = createTexturedBox(Vector3(0.24f, 2.7f, 0.24f), pos, tableBmp)
+            val pillar = createTexturedBox(Vector3(0.28f, 3.05f, 0.28f), pos, tableBmp)
             pillarEntities.add(pillar)
             content.addEntity(pillar)
         }
 
-        // 顶部 3 根横向天花板横梁（Ceiling Beams）
+        // 顶部 3 根横向天花板横梁（Ceiling Beams）+ 中央复古吊灯
         ceilingBeamEntities.clear()
-        listOf(-1.8f, -0.5f, 0.8f).forEach { zPos ->
+        listOf(-1.8f, -0.35f, 1.1f).forEach { zPos ->
             val beam = createTexturedBox(
-                size = Vector3(4.8f, 0.14f, 0.22f),
-                position = Vector3(0f, 2.65f, zPos),
+                size = Vector3(5.5f, 0.16f, 0.24f),
+                position = Vector3(0f, 2.88f, zPos),
                 bitmap = tableBmp
             )
             ceilingBeamEntities.add(beam)
             content.addEntity(beam)
         }
+        ceilingLightEntity = createTexturedSphere(
+            radius = 0.22f,
+            position = Vector3(0f, 2.74f, -0.35f),
+            bitmap = lampGlowBmp
+        ).also { content.addEntity(it) }
 
         // 正面墙左侧：3D 密室过道大门 + 门框
         doorFrameEntity = createTexturedBox(
-            size = Vector3(1.12f, 1.98f, 0.06f),
-            position = Vector3(-1.05f, 1.02f, -2.48f),
+            size = Vector3(1.14f, 2.06f, 0.08f),
+            position = Vector3(-1.05f, 1.04f, -2.86f),
             bitmap = tableBmp
         ).also { content.addEntity(it) }
 
         doorEntity = createInteractiveBox(
-            size = Vector3(0.98f, 1.86f, 0.08f),
-            position = Vector3(-1.05f, 1.0f, -2.45f),
+            size = Vector3(0.98f, 1.92f, 0.08f),
+            position = Vector3(-1.05f, 1.02f, -2.82f),
             rotation = EulerAngles(0f, 0f, 0f),
             bitmap = doorBmp
         ).also {
@@ -468,6 +482,7 @@ class EscapeRoom3DScene {
         interactedClueIndices.clear()
 
         applyBitmapToEntity(floorEntity, bundle.floorBitmap)
+        applyBitmapToEntity(ceilingEntity, bundle.floorBitmap)
         applyBitmapToEntity(frontWallEntity, bundle.wallBitmap)
         applyBitmapToEntity(backWallEntity, bundle.wallBitmap)
         applyBitmapToEntity(leftWallEntity, bundle.wallBitmap)
@@ -618,13 +633,13 @@ class EscapeRoom3DScene {
         if (isOpen) {
             registerTransform(
                 entity = door,
-                position = Vector3(-1.36f, 1.0f, -2.12f),
+                position = Vector3(-1.36f, 1.02f, -2.48f),
                 rotation = EulerAngles(0f, -68f, 0f)
             )
         } else {
             registerTransform(
                 entity = door,
-                position = Vector3(-1.05f, 1.0f, -2.45f),
+                position = Vector3(-1.05f, 1.02f, -2.82f),
                 rotation = EulerAngles(0f, 0f, 0f)
             )
         }

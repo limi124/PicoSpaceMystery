@@ -24,19 +24,19 @@
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
 
-            <!-- DefaultStage Configuration (Mixed Reality 360° 空间密室) -->
+            <!-- DefaultStage Configuration (Full Immersive 360° 六面全封闭密室，脱离 PICO 原始透视场景) -->
             <meta-data
                 android:name="pico.spatial.stage.id"
                 android:value="EscapeRoomStage" />
             <meta-data
                 android:name="pico.spatial.stage.style"
-                android:value="1" />
+                android:value="2" />
             <meta-data
                 android:name="pico.spatial.stage.immersion"
-                android:value="85" />
+                android:value="100" />
             <meta-data
                 android:name="pico.spatial.stage.immersion_min"
-                android:value="30" />
+                android:value="100" />
             <meta-data
                 android:name="pico.spatial.stage.immersion_max"
                 android:value="100" />

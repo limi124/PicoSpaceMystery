@@ -102,7 +102,7 @@ fun HomeStage() {
         audioBanner = "👣 已移动至机位：${vp.label}"
     }
 
-    fun enterRoom(roomIdx: Int, res: OrchestrationResult) {
+    fun enterRoom(roomIdx: Int, res: OrchestrationResult, autoCollapseHud: Boolean = false) {
         res.script.rooms.getOrNull(roomIdx) ?: return
         currentRoomIndex = roomIdx
         unlockedRooms = unlockedRooms + roomIdx
@@ -114,8 +114,16 @@ fun HomeStage() {
         passwordFeedback = ""
         currentViewpointIndex = 0
         room3D.setViewpointOffset(Vector3(0f, 0f, 0f))
+        // 直接立即刷新 3D 场景与材质，不依赖点击触发 SpatialView.update！
+        val doorUnlocked = unlockedDoorForRooms.contains(roomIdx)
+        room3D.applyRoomStage(res, roomIdx, doorUnlocked)
+        suspectSpotLabel = room3D.getCurrentSuspectSpot().label
         audioSynth.playRoomTransition(roomIdx)
         sceneSyncToken += 1
+        renderedSyncToken = sceneSyncToken
+        if (autoCollapseHud) {
+            hudCollapsed = true
+        }
     }
 
     fun triggerSuspectRandomPatrol(res: OrchestrationResult) {
@@ -259,7 +267,8 @@ fun HomeStage() {
                 onProgress = { logs -> agentLogs = logs }
             )
             orchestrationResult = result
-            enterRoom(0, result)
+            enterRoom(0, result, autoCollapseHud = true)
+            audioBanner = "✨ 已构建「${result.script.worldview}」六面封闭 3D 密室！可自由环顾搜证，点击人物直接对话。"
             phase = StagePhase.PLAYING
 
             // 后台渐进式为第 2、3 间密室补充生成硅基流动 Kolors AI 贴图，既避免一次性 20+ 并发触发 429，又保证后两间房也拥有全套 AI 贴图
@@ -273,9 +282,12 @@ fun HomeStage() {
                         config = llmConfig
                     )
                     if (updatedAssets != null) {
-                        orchestrationResult = curRes.copy(visualAssets = updatedAssets)
+                        val updatedRes = curRes.copy(visualAssets = updatedAssets)
+                        orchestrationResult = updatedRes
                         if (currentRoomIndex == bgRoomIdx) {
+                            room3D.applyRoomStage(updatedRes, bgRoomIdx, unlockedDoorForRooms.contains(bgRoomIdx))
                             sceneSyncToken += 1
+                            renderedSyncToken = sceneSyncToken
                         }
                     }
                 }

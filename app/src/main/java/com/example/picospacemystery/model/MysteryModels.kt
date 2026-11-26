@@ -99,9 +99,9 @@ data class SpatialViewpoint(
     companion object {
         val PRESETS: List<SpatialViewpoint> = listOf(
             SpatialViewpoint(0, "📍 全景中央", 0f, 0f, 0f),
-            SpatialViewpoint(1, "🔍 凑近书桌", 0f, -0.08f, 0.58f),
-            SpatialViewpoint(2, "🚪 左墙与大门", 0.95f, 0f, 0.82f),
-            SpatialViewpoint(3, "🗣️ 右墙与后方", -0.95f, 0f, 0.62f)
+            SpatialViewpoint(1, "🔍 凑近书桌", 0f, -0.05f, 0.48f),
+            SpatialViewpoint(2, "🚪 左墙与大门", 0.65f, 0f, 0.55f),
+            SpatialViewpoint(3, "🗣️ 右墙与后方", -0.65f, 0f, -0.35f)
         )
 
         fun byIndex(index: Int): SpatialViewpoint =
